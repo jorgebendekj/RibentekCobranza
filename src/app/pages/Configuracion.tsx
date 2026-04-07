@@ -12,9 +12,10 @@ export default function Configuracion() {
   const { data: config, isLoading } = useWhatsappConfig();
   const saveConfig = useSaveWhatsappConfig();
 
-  const [metaId, setMetaId] = useState("");
-  const [wabaId, setWabaId] = useState("");
-  const [accessToken, setAccessToken] = useState("");
+  const getInitial = (key: string) => sessionStorage.getItem(`config_draft_${key}`) ?? "";
+  const [metaId, setMetaId] = useState(getInitial("metaId"));
+  const [wabaId, setWabaId] = useState(getInitial("wabaId"));
+  const [accessToken, setAccessToken] = useState(getInitial("accessToken"));
   const [showToken, setShowToken] = useState(false);
 
   const [isInitialized, setIsInitialized] = useState(false);
@@ -22,12 +23,17 @@ export default function Configuracion() {
   // Initialize form once when config is successfully loaded
   useEffect(() => {
     if (config && !isInitialized) {
-      setMetaId(config.meta_id);
-      setWabaId(config.waba_id);
-      setAccessToken(config.token);
+      if (!sessionStorage.getItem("config_draft_metaId")) setMetaId(config.meta_id);
+      if (!sessionStorage.getItem("config_draft_wabaId")) setWabaId(config.waba_id);
+      if (!sessionStorage.getItem("config_draft_accessToken")) setAccessToken(config.token);
       setIsInitialized(true);
     }
   }, [config, isInitialized]);
+
+  // Sync to session storage on change
+  useEffect(() => { sessionStorage.setItem("config_draft_metaId", metaId); }, [metaId]);
+  useEffect(() => { sessionStorage.setItem("config_draft_wabaId", wabaId); }, [wabaId]);
+  useEffect(() => { sessionStorage.setItem("config_draft_accessToken", accessToken); }, [accessToken]);
   const handleSave = () => {
     if (!metaId || !wabaId || !accessToken) {
       toast.error("Por favor completa todos los campos");
@@ -36,7 +42,12 @@ export default function Configuracion() {
     saveConfig.mutate(
       { meta_id: metaId, waba_id: wabaId, token: accessToken },
       {
-        onSuccess: () => toast.success("Configuración guardada correctamente"),
+        onSuccess: () => {
+          sessionStorage.removeItem("config_draft_metaId");
+          sessionStorage.removeItem("config_draft_wabaId");
+          sessionStorage.removeItem("config_draft_accessToken");
+          toast.success("Configuración guardada correctamente");
+        },
         onError: (err) => toast.error(`Error al guardar: ${err.message}`),
       }
     );
