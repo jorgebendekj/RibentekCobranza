@@ -1,6 +1,8 @@
-import { BarChart3, DollarSign, UserCheck, Users, Settings, MessageSquare } from "lucide-react";
+import { BarChart3, DollarSign, UserCheck, Users, Settings, MessageSquare, LogOut, Building2, CreditCard, ShieldCheck } from "lucide-react";
 import { Link, useLocation } from "react-router";
-import ribentekLogo from "figma:asset/1300735e89082c752bf754257679f55329d5f192.png";
+import { useAuth } from "../context/AuthContext";
+import { toast } from "sonner";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 
 interface SidebarProps {
   children: React.ReactNode;
@@ -8,6 +10,7 @@ interface SidebarProps {
 
 export function Layout({ children }: SidebarProps) {
   const location = useLocation();
+  const { dbUser, signOut, workspaces, activeWorkspaceId, switchWorkspace } = useAuth();
 
   const menuItems = [
     { path: "/cobranzas", label: "Dashboard Cobranzas", icon: DollarSign },
@@ -18,27 +21,54 @@ export function Layout({ children }: SidebarProps) {
     { path: "/configuracion", label: "Configuración", icon: Settings },
   ];
 
+  const adminItems = [
+    { path: "/admin/tenants", label: "Tenants", icon: Building2 },
+    { path: "/admin/accesos", label: "Accesos", icon: ShieldCheck },
+    { path: "/admin/suscripciones", label: "Suscripciones", icon: CreditCard },
+  ];
+
+  const isSuperadmin = dbUser?.role === "Superadmin";
+
+  const handleSignOut = async () => {
+    await signOut();
+    toast.info("Sesión cerrada");
+  };
+
+  const initials = dbUser?.name
+    ? dbUser.name.split(" ").map((w) => w[0]).slice(0, 2).join("").toUpperCase()
+    : "AI";
+
   return (
     <div className="flex h-screen bg-slate-50">
-      {/* Sidebar */}
       <aside className="w-64 bg-white border-r border-slate-200 flex flex-col">
         <div className="p-6 border-b border-slate-200">
           <div className="flex items-center gap-3 mb-1">
-            <img 
-              src={ribentekLogo} 
-              alt="Ribentek" 
-              className="size-16 rounded-lg"
-            />
+            <div className="size-10 rounded-lg bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center shrink-0">
+              <DollarSign className="size-6 text-white" />
+            </div>
             <div>
-              <h1 className="font-semibold text-xl text-slate-900">
-                Ribentek
-              </h1>
+              <h1 className="font-semibold text-xl text-slate-900">Ribentek</h1>
               <p className="text-sm text-slate-600">AI Cobranzas</p>
             </div>
           </div>
+
+          <div className="mt-4">
+            <Select value={activeWorkspaceId ?? undefined} onValueChange={switchWorkspace}>
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Seleccionar workspace" />
+              </SelectTrigger>
+              <SelectContent>
+                {workspaces.map((workspace) => (
+                  <SelectItem key={workspace.id} value={workspace.id}>
+                    {workspace.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
 
-        <nav className="flex-1 p-4">
+        <nav className="flex-1 p-4 overflow-y-auto">
           <ul className="space-y-1">
             {menuItems.map((item) => {
               const Icon = item.icon;
@@ -63,22 +93,59 @@ export function Layout({ children }: SidebarProps) {
               );
             })}
           </ul>
+
+          {isSuperadmin && (
+            <>
+              <div className="mt-4 mb-2 px-4 flex items-center gap-2">
+                <div className="flex-1 h-px bg-slate-200" />
+                <span className="text-xs text-slate-400 font-medium">ADMIN</span>
+                <div className="flex-1 h-px bg-slate-200" />
+              </div>
+              <ul className="space-y-1">
+                {adminItems.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = location.pathname.startsWith(item.path);
+                  return (
+                    <li key={item.path}>
+                      <Link
+                        to={item.path}
+                        className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                          isActive
+                            ? "bg-purple-50 text-purple-700 font-medium"
+                            : "text-slate-700 hover:bg-slate-100"
+                        }`}
+                      >
+                        <Icon className="size-5" />
+                        <span>{item.label}</span>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
         </nav>
 
         <div className="p-4 border-t border-slate-200">
           <div className="flex items-center gap-3 px-4 py-3">
-            <div className="size-10 rounded-full bg-slate-200 flex items-center justify-center">
-              <span className="text-sm font-medium text-slate-600">AD</span>
+            <div className="size-10 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
+              <span className="text-sm font-semibold text-blue-700">{initials}</span>
             </div>
-            <div className="flex-1">
-              <p className="text-sm font-medium text-slate-900">Administrador</p>
-              <p className="text-xs text-slate-500">admin@empresa.com</p>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-slate-900 truncate">{dbUser?.name ?? "Administrador"}</p>
+              <p className="text-xs text-slate-500 truncate">{dbUser?.email ?? ""}</p>
             </div>
+            <button
+              onClick={handleSignOut}
+              title="Cerrar sesión"
+              className="text-slate-400 hover:text-red-500 transition-colors"
+            >
+              <LogOut className="size-4" />
+            </button>
           </div>
         </div>
       </aside>
 
-      {/* Main Content */}
       <main className="flex-1 overflow-auto">
         <div className="p-8">{children}</div>
       </main>
