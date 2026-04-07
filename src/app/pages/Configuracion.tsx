@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -17,15 +17,17 @@ export default function Configuracion() {
   const [accessToken, setAccessToken] = useState("");
   const [showToken, setShowToken] = useState(false);
 
-  // Initialize form with loaded config
-  useState(() => {
-    if (config) {
+  const [isInitialized, setIsInitialized] = useState(false);
+
+  // Initialize form once when config is successfully loaded
+  useEffect(() => {
+    if (config && !isInitialized) {
       setMetaId(config.meta_id);
       setWabaId(config.waba_id);
       setAccessToken(config.token);
+      setIsInitialized(true);
     }
-  });
-
+  }, [config, isInitialized]);
   const handleSave = () => {
     if (!metaId || !wabaId || !accessToken) {
       toast.error("Por favor completa todos los campos");
