@@ -3,6 +3,13 @@ import type { Database, WhatsappConfiguration, WhatsappTemplate } from '../data/
 
 type TemplateInsert = Database['public']['Tables']['whatsapp_templates']['Insert'];
 
+function getAdminBaseUrl() {
+  const envUrl = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL;
+  if (envUrl) return envUrl;
+  if (typeof window !== 'undefined' && window.location?.origin) return window.location.origin;
+  return 'http://localhost:3001';
+}
+
 export const whatsappService = {
   // ── Configurations ──────────────────────────────────────────
 
@@ -34,7 +41,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL ?? 'http://localhost:3001';
+    const adminUrl = getAdminBaseUrl();
 
     const res = await fetch(`${adminUrl}/api/meta/configurations/upsert`, {
       method: 'POST',
@@ -89,7 +96,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL ?? 'http://localhost:3001';
+    const adminUrl = getAdminBaseUrl();
 
     const res = await fetch(`${adminUrl}/api/meta/templates/create`, {
       method: 'POST',
@@ -110,7 +117,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL ?? 'http://localhost:3001';
+    const adminUrl = getAdminBaseUrl();
 
     const res = await fetch(`${adminUrl}/api/meta/templates/sync`, {
       method: 'GET',
