@@ -1,7 +1,6 @@
 import { supabase } from '../../lib/supabase';
 import type { Database, WhatsappConfiguration, WhatsappTemplate } from '../data/supabase.types';
 
-type ConfigInsert = Database['public']['Tables']['whatsapp_configurations']['Insert'];
 type TemplateInsert = Database['public']['Tables']['whatsapp_templates']['Insert'];
 
 export const whatsappService = {
@@ -20,34 +19,35 @@ export const whatsappService = {
   },
 
   /** Upsert WhatsApp configuration */
-  async saveConfiguration(tenantId: string, payload: { meta_id: string; waba_id: string; token: string }, userId: string): Promise<WhatsappConfiguration> {
-    // Try to find existing
-    const existing = await whatsappService.getConfiguration(tenantId);
-
-    if (existing) {
-      const { data, error } = await supabase
-        .from('whatsapp_configurations')
-        .update({ ...payload, updated_by: userId })
-        .eq('id', existing.id)
-        .select()
-        .single();
-      if (error) throw error;
-      return data;
+  async saveConfiguration(
+    tenantId: string,
+    payload: {
+      channel_name?: string;
+      meta_id: string;
+      waba_id: string;
+      phone_number_id?: string;
+      token: string;
+      verify_token?: string;
+      default_template_language?: string;
     }
+  ): Promise<WhatsappConfiguration> {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL ?? 'http://localhost:3001';
 
-    const insert: ConfigInsert = {
-      ...payload,
-      tenant_id: tenantId,
-      created_by: userId,
-      updated_by: userId,
-    };
-    const { data, error } = await supabase
-      .from('whatsapp_configurations')
-      .insert(insert)
-      .select()
-      .single();
-    if (error) throw error;
-    return data;
+    const res = await fetch(`${adminUrl}/api/meta/configurations/upsert`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Error validando y guardando configuración');
+    return json.configuration as WhatsappConfiguration;
   },
 
   // ── Templates ───────────────────────────────────────────────
@@ -73,5 +73,54 @@ export const whatsappService = {
       .single();
     if (error) throw error;
     return data;
+  },
+
+  /** Create Meta template through backend proxy */
+  async createMetaTemplate(
+    tenantId: string,
+    payload: {
+      name: string;
+      language: string;
+      category: string;
+      components: Array<Record<string, unknown>>;
+      args?: string[];
+    }
+  ) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL ?? 'http://localhost:3001';
+
+    const res = await fetch(`${adminUrl}/api/meta/templates/create`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Error creando plantilla');
+    return json as WhatsappTemplate;
+  },
+
+  /** Sync Meta template statuses through backend proxy */
+  async syncMetaTemplates(tenantId: string) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL ?? 'http://localhost:3001';
+
+    const res = await fetch(`${adminUrl}/api/meta/templates/sync`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Error sincronizando plantillas');
+    return json as { success: boolean; synced: number; total_remote: number; total_local: number };
   },
 };

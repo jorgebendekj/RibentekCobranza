@@ -120,9 +120,13 @@ export type Database = {
       whatsapp_configurations: {
         Row: {
           id: string;
+          channel_name: string | null;
           meta_id: string;
           waba_id: string;
           token: string;
+          phone_number_id: string | null;
+          verify_token: string | null;
+          default_template_language: string;
           tenant_id: string;
           created_at: string;
           updated_at: string;
@@ -133,6 +137,16 @@ export type Database = {
         };
         Insert: Omit<Database['public']['Tables']['whatsapp_configurations']['Row'], 'id' | 'created_at' | 'updated_at'> & {
           id?: string;
+          phone_number_id?: string;
+          channel_name?: string | null;
+          verify_token?: string | null;
+          default_template_language?: string;
+          created_at?: string;
+          updated_at?: string;
+          deleted_at?: string | null;
+          created_by?: string | null;
+          updated_by?: string | null;
+          deleted_by?: string | null;
         };
         Update: Partial<Database['public']['Tables']['whatsapp_configurations']['Insert']>;
       };
@@ -144,6 +158,11 @@ export type Database = {
           template_name: string;
           format_type: Database['public']['Enums']['template_format_type'];
           args: string[];
+          meta_status: string;
+          meta_template_id: string | null;
+          language: string;
+          category: string;
+          components: Json;
           created_at: string;
           updated_at: string;
           deleted_at: string | null;
@@ -153,6 +172,16 @@ export type Database = {
         };
         Insert: Omit<Database['public']['Tables']['whatsapp_templates']['Row'], 'id' | 'created_at' | 'updated_at'> & {
           id?: string;
+          meta_status?: string;
+          language?: string;
+          category?: string;
+          components?: Json;
+          created_at?: string;
+          updated_at?: string;
+          deleted_at?: string | null;
+          created_by?: string | null;
+          updated_by?: string | null;
+          deleted_by?: string | null;
         };
         Update: Partial<Database['public']['Tables']['whatsapp_templates']['Insert']>;
       };

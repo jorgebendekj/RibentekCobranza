@@ -72,11 +72,24 @@ app.get('/webhooks/meta', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-  const verifyToken = process.env.META_VERIFY_TOKEN;
 
-  if (mode !== 'subscribe' || !challenge) return res.status(400).send('Invalid webhook challenge');
-  if (!verifyToken || token !== verifyToken) return res.status(403).send('Forbidden');
-  return res.status(200).send(String(challenge));
+  if (mode !== 'subscribe' || !challenge || !token) return res.status(400).send('Invalid webhook challenge');
+
+  // Use verify token stored in whatsapp_configurations (app-level webhook setup),
+  // fallback to env token for backward compatibility.
+  (async () => {
+    const { data: cfg } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('id')
+      .eq('verify_token', String(token))
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    const envVerifyToken = process.env.META_VERIFY_TOKEN;
+    const isValid = Boolean(cfg) || (!!envVerifyToken && token === envVerifyToken);
+    if (!isValid) return res.status(403).send('Forbidden');
+    return res.status(200).send(String(challenge));
+  })().catch(() => res.status(500).send('Webhook verification error'));
 });
 
 app.post('/webhooks/meta', async (req, res) => {
@@ -532,6 +545,273 @@ app.post('/invites/:token/accept', async (req, res) => {
 
   await supabaseAdmin.from('tenant_invites').update({ status: 'accepted' }).eq('id', inviteToken);
   return res.json({ success: true, tenant_id: invite.tenant_id, role: invite.role });
+});
+
+// ════════════════════════════════════════════════════════════════
+// META API PROXIES (WhatsApp Templates)
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/meta/configurations/upsert
+ * Validates connectivity against Meta Graph API and only then persists config.
+ */
+app.post('/api/meta/configurations/upsert', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId, userId } = req.workspaceAdmin;
+  const {
+    channel_name,
+    meta_id,
+    waba_id,
+    phone_number_id,
+    token,
+    verify_token,
+    default_template_language,
+  } = req.body || {};
+
+  if (!meta_id || !waba_id || !phone_number_id || !token || !verify_token) {
+    return res.status(400).json({
+      error: 'Missing required fields: meta_id, waba_id, phone_number_id, token, verify_token',
+    });
+  }
+
+  const headers = { Authorization: `Bearer ${token}` };
+  const graphVersion = process.env.META_GRAPH_VERSION || 'v23.0';
+
+  try {
+    // Validate Facebook App ID with current token.
+    const appRes = await fetch(`https://graph.facebook.com/${graphVersion}/${meta_id}?fields=id,name`, { headers });
+    const appData = await appRes.json();
+    if (!appRes.ok || !appData?.id) {
+      return res.status(400).json({ error: appData?.error?.message || 'No se pudo validar Facebook App ID con el token' });
+    }
+
+    // Validate WABA access.
+    const wabaRes = await fetch(`https://graph.facebook.com/${graphVersion}/${waba_id}?fields=id,name`, { headers });
+    const wabaData = await wabaRes.json();
+    if (!wabaRes.ok || !wabaData?.id) {
+      return res.status(400).json({ error: wabaData?.error?.message || 'No se pudo validar WABA ID con el token' });
+    }
+
+    // Validate phone number access.
+    const phoneRes = await fetch(`https://graph.facebook.com/${graphVersion}/${phone_number_id}?fields=id,display_phone_number,verified_name`, { headers });
+    const phoneData = await phoneRes.json();
+    if (!phoneRes.ok || !phoneData?.id) {
+      return res.status(400).json({ error: phoneData?.error?.message || 'No se pudo validar Phone Number ID con el token' });
+    }
+
+    // Persist only after successful validations.
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (existingError) return res.status(500).json({ error: existingError.message });
+
+    const payload = {
+      channel_name: channel_name || null,
+      meta_id: String(meta_id),
+      waba_id: String(waba_id),
+      phone_number_id: String(phone_number_id),
+      token: String(token),
+      verify_token: String(verify_token),
+      default_template_language: String(default_template_language || 'es_LA'),
+      updated_by: userId,
+    };
+
+    let dbRes;
+    if (existing?.id) {
+      dbRes = await supabaseAdmin
+        .from('whatsapp_configurations')
+        .update(payload)
+        .eq('id', existing.id)
+        .select()
+        .single();
+    } else {
+      dbRes = await supabaseAdmin
+        .from('whatsapp_configurations')
+        .insert({
+          ...payload,
+          tenant_id: tenantId,
+          created_by: userId,
+        })
+        .select()
+        .single();
+    }
+
+    if (dbRes.error) return res.status(500).json({ error: dbRes.error.message });
+
+    return res.status(200).json({
+      success: true,
+      connection_check: {
+        app: { id: appData.id, name: appData.name || null },
+        waba: { id: wabaData.id, name: wabaData.name || null },
+        phone: {
+          id: phoneData.id,
+          display_phone_number: phoneData.display_phone_number || null,
+          verified_name: phoneData.verified_name || null,
+        },
+      },
+      configuration: dbRes.data,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Error validando conexión con Meta' });
+  }
+});
+
+/**
+ * POST /api/meta/templates/create
+ * Creates a template in Meta Cloud API and if successful, saves it to Supabase as PENDING
+ */
+app.post('/api/meta/templates/create', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId, userId } = req.workspaceAdmin;
+  const { name, language, category, components, args } = req.body || {};
+
+  if (!name || !category || !Array.isArray(components) || components.length === 0) {
+    return res.status(400).json({
+      error: 'Missing required fields: name, category, components[]',
+    });
+  }
+
+  try {
+    // 1. Get configurations for this tenant
+    const { data: config, error: configError } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('id, waba_id, token, default_template_language')
+      .eq('tenant_id', tenantId)
+      .single();
+
+    if (configError || !config) {
+      return res.status(400).json({ error: 'WhatsApp config not found for this workspace' });
+    }
+
+    // 2. Build payload for Meta
+    const normalizedName = String(name).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const payload = {
+      name: normalizedName,
+      language: language || config.default_template_language || 'es_LA',
+      category,
+      components,
+    };
+
+    // 3. Send to Meta API
+    const metaRes = await fetch(`https://graph.facebook.com/v23.0/${config.waba_id}/message_templates`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${config.token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const metaData = await metaRes.json();
+    if (!metaRes.ok) {
+      return res.status(metaRes.status).json({
+        error: metaData.error?.message || 'Meta API Error',
+        details: metaData.error,
+      });
+    }
+
+    // 4. Save to Supabase DB
+    const { data: template, error: dbError } = await supabaseAdmin
+      .from('whatsapp_templates')
+      .insert({
+        whatsapp_configuration_id: config.id,
+        template_name: normalizedName,
+        format_type: 'positional',
+        args: args || [],
+        meta_status: String(metaData.status || 'PENDING').toUpperCase(),
+        meta_template_id: metaData.id,
+        language: payload.language,
+        category,
+        components,
+        created_by: userId,
+        updated_by: userId,
+      })
+      .select()
+      .single();
+
+    if (dbError) return res.status(500).json({ error: dbError.message });
+    return res.status(201).json(template);
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/meta/templates/sync
+ * Syncs the status of local templates with Meta
+ */
+app.get('/api/meta/templates/sync', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId } = req.workspaceAdmin;
+  const mode = String(req.query.mode || 'pending').toLowerCase(); // pending | all
+
+  try {
+    const { data: config, error: configError } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('id, waba_id, token')
+      .eq('tenant_id', tenantId)
+      .single();
+
+    if (configError || !config) return res.status(400).json({ error: 'WhatsApp config not found' });
+
+    // 1) Fetch all templates from Meta
+    const metaRes = await fetch(`https://graph.facebook.com/v23.0/${config.waba_id}/message_templates?limit=100`, {
+      headers: { 'Authorization': `Bearer ${config.token}` },
+    });
+
+    const metaData = await metaRes.json();
+    if (!metaRes.ok) return res.status(metaRes.status).json({ error: metaData.error?.message });
+
+    const metaTemplates = metaData.data || [];
+    let syncedCount = 0;
+
+    // 2) Get local templates belonging to this tenant config.
+    // Default behavior syncs only PENDING templates as requested in implementation task.
+    let localQuery = supabaseAdmin
+      .from('whatsapp_templates')
+      .select('id, meta_template_id, template_name, meta_status')
+      .eq('whatsapp_configuration_id', config.id);
+
+    if (mode !== 'all') {
+      localQuery = localQuery.eq('meta_status', 'PENDING');
+    }
+
+    const { data: localTemplates } = await localQuery;
+
+    if (localTemplates) {
+      for (const local of localTemplates) {
+        // Try to match by meta_template_id first, then by name
+        const match = metaTemplates.find(
+          (t) => t.id === local.meta_template_id || t.name === local.template_name
+        );
+        if (match) {
+          await supabaseAdmin
+            .from('whatsapp_templates')
+            .update({
+              meta_status: match.status,
+              meta_template_id: match.id,
+              language: match.language || undefined,
+              category: match.category || undefined,
+              components: match.components || undefined,
+            })
+            .eq('id', local.id);
+          syncedCount++;
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      mode: mode === 'all' ? 'all' : 'pending',
+      synced: syncedCount,
+      total_remote: metaTemplates.length,
+      total_local: localTemplates?.length ?? 0,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // ─────────────────────────────────────────────────────────────
