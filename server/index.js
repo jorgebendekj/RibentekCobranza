@@ -93,99 +93,119 @@ app.get('/webhooks/meta', (req, res) => {
 });
 
 app.post('/webhooks/meta', async (req, res) => {
-  // Always respond 200 immediately so Meta doesn't retry
-  res.status(200).json({ ok: true });
-
-  // Skip signature check only when META_APP_SECRET not set (development)
-  if (process.env.META_APP_SECRET && !verifyMetaSignature(req)) {
-    console.warn('[meta-webhook] invalid signature, skipping');
-    return;
-  }
+  const startedAt = Date.now();
+  console.log('[webhook] POST /webhooks/meta received');
 
   try {
     const payload = req.body ?? {};
-    if (!Array.isArray(payload.entry)) return;
+    console.log('[webhook] object:', payload.object, '| entries:', Array.isArray(payload.entry) ? payload.entry.length : 0);
+
+    // Signature check — only enforced when META_APP_SECRET is set
+    if (process.env.META_APP_SECRET) {
+      if (!verifyMetaSignature(req)) {
+        console.warn('[webhook] invalid signature — rejecting');
+        return res.status(200).json({ ok: true, note: 'invalid_signature' });
+      }
+      console.log('[webhook] signature OK');
+    } else {
+      console.log('[webhook] META_APP_SECRET not set — skipping signature check');
+    }
+
+    if (!Array.isArray(payload.entry)) {
+      console.log('[webhook] no entries — done');
+      return res.status(200).json({ ok: true });
+    }
 
     for (const entry of payload.entry) {
       for (const change of (entry.changes ?? [])) {
         const value = change.value ?? {};
         const phoneNumberId = value.metadata?.phone_number_id;
+        console.log('[webhook] change field:', change.field, '| phone_number_id:', phoneNumberId);
 
         // ── 1. Find tenant config by the receiving phone_number_id ──
         let config = null;
         if (phoneNumberId) {
-          const { data } = await supabaseAdmin
+          const { data, error: cfgErr } = await supabaseAdmin
             .from('whatsapp_configurations')
             .select('id, tenant_id, token')
             .eq('phone_number_id', phoneNumberId)
             .is('deleted_at', null)
             .maybeSingle();
           config = data;
+          if (cfgErr) console.error('[webhook] config lookup error:', cfgErr.message);
+          console.log('[webhook] config found:', config ? `tenant=${config.tenant_id}` : 'null — no match for phone_number_id');
         }
 
         // ── 2. Handle incoming messages ────────────────────────────
         if (Array.isArray(value.messages)) {
+          console.log('[webhook] messages count:', value.messages.length);
           for (const msg of value.messages) {
-            const from = msg.from;       // sender's WA number e.g. "591XXXXXXXX"
-            const waMsgId = msg.id;      // WhatsApp message ID
+            const from = msg.from;
             const text = msg.text?.body ?? msg.type ?? '';
+            console.log('[webhook] msg from:', from, '| type:', msg.type, '| text:', text.slice(0, 80));
 
-            if (!config || !from) continue;
+            if (!config || !from) {
+              console.warn('[webhook] skipping message — no config or no from');
+              continue;
+            }
 
             const tenantId = config.tenant_id;
 
-            // Upsert contact (match by phone_number scoped to tenant)
+            // Upsert contact
             let contactId;
-            const { data: existingContact } = await supabaseAdmin
+            const { data: existingContact, error: cErr } = await supabaseAdmin
               .from('contacts')
               .select('id')
               .eq('tenant_id', tenantId)
               .eq('phone_number', from)
               .is('deleted_at', null)
               .maybeSingle();
+            if (cErr) console.error('[webhook] contact lookup error:', cErr.message);
 
             if (existingContact) {
               contactId = existingContact.id;
-              await supabaseAdmin
-                .from('contacts')
-                .update({ last_interaction: new Date().toISOString() })
-                .eq('id', contactId);
+              await supabaseAdmin.from('contacts').update({ last_interaction: new Date().toISOString() }).eq('id', contactId);
+              console.log('[webhook] existing contact:', contactId);
             } else {
-              // Create a minimal contact using the name from profile (if provided) or phone
               const displayName = value.contacts?.[0]?.profile?.name ?? from;
-              const { data: newContact } = await supabaseAdmin
+              const { data: newContact, error: ncErr } = await supabaseAdmin
                 .from('contacts')
                 .insert({ name: displayName, phone_number: from, tenant_id: tenantId })
                 .select('id')
                 .single();
+              if (ncErr) console.error('[webhook] contact insert error:', ncErr.message);
               contactId = newContact?.id;
+              console.log('[webhook] created contact:', contactId, 'name:', displayName);
             }
-            if (!contactId) continue;
+            if (!contactId) { console.error('[webhook] no contactId, skipping'); continue; }
 
             // Upsert thread
             let threadId;
-            const { data: existingThread } = await supabaseAdmin
+            const { data: existingThread, error: tErr } = await supabaseAdmin
               .from('whatsapp_threads')
               .select('id')
               .eq('contact_id', contactId)
               .eq('tenant_id', tenantId)
               .is('deleted_at', null)
               .maybeSingle();
+            if (tErr) console.error('[webhook] thread lookup error:', tErr.message);
 
             if (existingThread) {
               threadId = existingThread.id;
             } else {
-              const { data: newThread } = await supabaseAdmin
+              const { data: newThread, error: ntErr } = await supabaseAdmin
                 .from('whatsapp_threads')
                 .insert({ contact_id: contactId, tenant_id: tenantId, last_message: text, last_interaction: new Date().toISOString() })
                 .select('id')
                 .single();
+              if (ntErr) console.error('[webhook] thread insert error:', ntErr.message);
               threadId = newThread?.id;
+              console.log('[webhook] created thread:', threadId);
             }
-            if (!threadId) continue;
+            if (!threadId) { console.error('[webhook] no threadId, skipping'); continue; }
 
-            // Insert message (deduplicated by wa_message_id if column exists)
-            await supabaseAdmin
+            // Insert message
+            const { error: msgErr } = await supabaseAdmin
               .from('whatsapp_messages')
               .insert({
                 whatsapp_thread_id: threadId,
@@ -194,6 +214,8 @@ app.post('/webhooks/meta', async (req, res) => {
                 read: false,
                 sent_at: msg.timestamp ? new Date(Number(msg.timestamp) * 1000).toISOString() : new Date().toISOString(),
               });
+            if (msgErr) console.error('[webhook] message insert error:', msgErr.message);
+            else console.log('[webhook] message saved OK in thread:', threadId);
 
             // Update thread snapshot
             await supabaseAdmin
@@ -203,31 +225,20 @@ app.post('/webhooks/meta', async (req, res) => {
           }
         }
 
-        // ── 3. Handle status updates (delivered / read) ────────────
+        // ── 3. Handle status updates ────────────────────────────────
         if (Array.isArray(value.statuses) && config) {
           for (const status of value.statuses) {
+            console.log('[webhook] status update:', status.status, 'recipient:', status.recipient_id);
             if (status.status === 'read') {
-              // Find thread by matching the recipient phone in the tenant
-              const recipientPhone = status.recipient_id;
               const { data: contact } = await supabaseAdmin
-                .from('contacts')
-                .select('id')
-                .eq('tenant_id', config.tenant_id)
-                .eq('phone_number', recipientPhone)
-                .maybeSingle();
+                .from('contacts').select('id').eq('tenant_id', config.tenant_id).eq('phone_number', status.recipient_id).maybeSingle();
               if (contact) {
                 const { data: thread } = await supabaseAdmin
-                  .from('whatsapp_threads')
-                  .select('id')
-                  .eq('contact_id', contact.id)
-                  .maybeSingle();
+                  .from('whatsapp_threads').select('id').eq('contact_id', contact.id).maybeSingle();
                 if (thread) {
-                  await supabaseAdmin
-                    .from('whatsapp_messages')
+                  await supabaseAdmin.from('whatsapp_messages')
                     .update({ read: true, read_at: new Date().toISOString() })
-                    .eq('whatsapp_thread_id', thread.id)
-                    .eq('incoming', false)
-                    .eq('read', false);
+                    .eq('whatsapp_thread_id', thread.id).eq('incoming', false).eq('read', false);
                 }
               }
             }
@@ -235,14 +246,19 @@ app.post('/webhooks/meta', async (req, res) => {
         }
       }
     }
+
+    console.log('[webhook] done in', Date.now() - startedAt, 'ms');
+    return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error('[meta-webhook] processing error:', err?.message || err);
+    console.error('[webhook] fatal error:', err?.message || err);
+    return res.status(200).json({ ok: true, error: err?.message }); // always 200 to Meta
   }
 });
 
 // ════════════════════════════════════════════════════════════════
 // META API PROXY — Send outbound message
 // ════════════════════════════════════════════════════════════════
+
 
 /**
  * POST /api/meta/messages/send
