@@ -19,6 +19,119 @@ const supabaseAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } }
 );
 
+const WINDOW_DURATION_MS = 24 * 60 * 60 * 1000;
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v23.0';
+
+function computeWindowState(lastInboundAt) {
+  if (!lastInboundAt) return { windowOpen: false, windowExpiresAt: null };
+  const windowExpiresAt = new Date(new Date(lastInboundAt).getTime() + WINDOW_DURATION_MS).toISOString();
+  return {
+    windowOpen: new Date(windowExpiresAt).getTime() > Date.now(),
+    windowExpiresAt,
+  };
+}
+
+async function resolveContactAndThread({ tenantId, phoneNumber, userId, seedLastMessage }) {
+  let contactId = null;
+  const { data: existingContact } = await supabaseAdmin
+    .from('contacts')
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .eq('phone_number', phoneNumber)
+    .is('deleted_at', null)
+    .maybeSingle();
+
+  if (existingContact?.id) {
+    contactId = existingContact.id;
+  } else {
+    const { data: newContact, error: contactError } = await supabaseAdmin
+      .from('contacts')
+      .insert({
+        name: phoneNumber,
+        phone_number: phoneNumber,
+        tenant_id: tenantId,
+        created_by: userId,
+        updated_by: userId,
+      })
+      .select('id')
+      .single();
+    if (contactError || !newContact?.id) throw new Error(contactError?.message || 'Could not create contact');
+    contactId = newContact.id;
+  }
+
+  let threadId = null;
+  const { data: existingThread } = await supabaseAdmin
+    .from('whatsapp_threads')
+    .select('id')
+    .eq('contact_id', contactId)
+    .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
+    .maybeSingle();
+
+  if (existingThread?.id) {
+    threadId = existingThread.id;
+  } else {
+    const { data: newThread, error: threadError } = await supabaseAdmin
+      .from('whatsapp_threads')
+      .insert({
+        contact_id: contactId,
+        tenant_id: tenantId,
+        last_message: seedLastMessage ?? null,
+        last_interaction: new Date().toISOString(),
+        created_by: userId,
+        updated_by: userId,
+      })
+      .select('id')
+      .single();
+    if (threadError || !newThread?.id) throw new Error(threadError?.message || 'Could not create thread');
+    threadId = newThread.id;
+  }
+
+  return { contactId, threadId };
+}
+
+async function getConversationWindowState({ tenantId, phoneNumber, explicitThreadId = null }) {
+  let threadId = explicitThreadId;
+
+  if (!threadId) {
+    const { data: contact } = await supabaseAdmin
+      .from('contacts')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('phone_number', phoneNumber)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (!contact?.id) return { threadId: null, lastInboundAt: null, windowOpen: false, windowExpiresAt: null };
+
+    const { data: thread } = await supabaseAdmin
+      .from('whatsapp_threads')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('contact_id', contact.id)
+      .is('deleted_at', null)
+      .maybeSingle();
+
+    if (!thread?.id) return { threadId: null, lastInboundAt: null, windowOpen: false, windowExpiresAt: null };
+    threadId = thread.id;
+  }
+
+  const { data: lastInboundMsg } = await supabaseAdmin
+    .from('whatsapp_messages')
+    .select('sent_at, created_at')
+    .eq('whatsapp_thread_id', threadId)
+    .eq('incoming', true)
+    .is('deleted_at', null)
+    .order('sent_at', { ascending: false, nullsFirst: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const lastInboundAt = lastInboundMsg?.sent_at || lastInboundMsg?.created_at || null;
+  const { windowOpen, windowExpiresAt } = computeWindowState(lastInboundAt);
+  return { threadId, lastInboundAt, windowOpen, windowExpiresAt };
+}
+
 // ── Middleware: validate service token ────────────────────────
 // Frontend sends its own JWT; we verify it's a valid Superadmin session
 async function requireSuperadmin(req, res, next) {
@@ -218,9 +331,20 @@ app.post('/webhooks/meta', async (req, res) => {
             else console.log('[webhook] message saved OK in thread:', threadId);
 
             // Update thread snapshot
+            const inboundAtIso = msg.timestamp
+              ? new Date(Number(msg.timestamp) * 1000).toISOString()
+              : new Date().toISOString();
+            const inboundWindow = computeWindowState(inboundAtIso);
+
             await supabaseAdmin
               .from('whatsapp_threads')
-              .update({ last_message: text, last_interaction: new Date().toISOString() })
+              .update({
+                last_message: text,
+                last_interaction: new Date().toISOString(),
+                last_inbound_at: inboundAtIso,
+                window_open: inboundWindow.windowOpen,
+                window_expires_at: inboundWindow.windowExpiresAt,
+              })
               .eq('id', threadId);
           }
         }
@@ -287,9 +411,24 @@ app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
       return res.status(400).json({ error: 'WhatsApp not configured or phone_number_id missing' });
     }
 
+    const windowState = await getConversationWindowState({
+      tenantId,
+      phoneNumber: phone_number,
+      explicitThreadId: thread_id || null,
+    });
+    if (!windowState.windowOpen) {
+      return res.status(409).json({
+        error: 'WINDOW_CLOSED',
+        message: 'Ventana de 24h cerrada. Usa una plantilla aprobada.',
+        window_open: false,
+        window_expires_at: windowState.windowExpiresAt,
+        last_inbound_at: windowState.lastInboundAt,
+      });
+    }
+
     // 2. Send via Meta Cloud API
     const metaRes = await fetch(
-      `https://graph.facebook.com/v23.0/${config.phone_number_id}/messages`,
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/${config.phone_number_id}/messages`,
       {
         method: 'POST',
         headers: {
@@ -317,42 +456,13 @@ app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
     // 3. Resolve or create thread
     let resolvedThreadId = thread_id;
     if (!resolvedThreadId) {
-      // Find contact by phone
-      const { data: contact } = await supabaseAdmin
-        .from('contacts')
-        .select('id')
-        .eq('tenant_id', tenantId)
-        .eq('phone_number', phone_number)
-        .is('deleted_at', null)
-        .maybeSingle();
-
-      if (contact) {
-        const { data: thread } = await supabaseAdmin
-          .from('whatsapp_threads')
-          .select('id')
-          .eq('contact_id', contact.id)
-          .eq('tenant_id', tenantId)
-          .is('deleted_at', null)
-          .maybeSingle();
-
-        if (thread) {
-          resolvedThreadId = thread.id;
-        } else {
-          const { data: newThread } = await supabaseAdmin
-            .from('whatsapp_threads')
-            .insert({
-              contact_id: contact.id,
-              tenant_id: tenantId,
-              last_message: message_text,
-              last_interaction: new Date().toISOString(),
-              created_by: userId,
-              updated_by: userId,
-            })
-            .select('id')
-            .single();
-          resolvedThreadId = newThread?.id;
-        }
-      }
+      const resolved = await resolveContactAndThread({
+        tenantId,
+        phoneNumber: phone_number,
+        userId,
+        seedLastMessage: message_text,
+      });
+      resolvedThreadId = resolved.threadId;
     }
 
     // 4. Store outbound message
@@ -374,13 +484,156 @@ app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
       // Update thread snapshot
       await supabaseAdmin
         .from('whatsapp_threads')
-        .update({ last_message: message_text, last_interaction: new Date().toISOString(), updated_by: userId })
+        .update({
+          last_message: message_text,
+          last_interaction: new Date().toISOString(),
+          window_open: true,
+          window_expires_at: windowState.windowExpiresAt,
+          last_inbound_at: windowState.lastInboundAt,
+          updated_by: userId,
+        })
         .eq('id', resolvedThreadId);
 
       return res.status(201).json({ success: true, message: saved, wa_response: metaData });
     }
 
     return res.status(201).json({ success: true, wa_response: metaData });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/meta/messages/send-template
+ * Body: { phone_number, template_id?, template_name?, language?, template_parameters?, thread_id? }
+ */
+app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId, userId } = req.workspaceAdmin;
+  const { phone_number, template_id, template_name, language, template_parameters, thread_id } = req.body || {};
+
+  if (!phone_number) return res.status(400).json({ error: 'phone_number is required' });
+  if (!template_id && !template_name) {
+    return res.status(400).json({ error: 'template_id or template_name is required' });
+  }
+
+  try {
+    const { data: config, error: configError } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('id, phone_number_id, token, default_template_language')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .single();
+
+    if (configError || !config?.phone_number_id) {
+      return res.status(400).json({ error: 'WhatsApp not configured or phone_number_id missing' });
+    }
+
+    let templateQuery = supabaseAdmin
+      .from('whatsapp_templates')
+      .select('id, template_name, language, meta_status, whatsapp_configuration_id')
+      .eq('whatsapp_configuration_id', config.id)
+      .eq('meta_status', 'APPROVED')
+      .is('deleted_at', null)
+      .limit(1);
+
+    if (template_id) templateQuery = templateQuery.eq('id', String(template_id));
+    else templateQuery = templateQuery.eq('template_name', String(template_name));
+
+    const { data: approvedTemplate, error: templateError } = await templateQuery.maybeSingle();
+    if (templateError || !approvedTemplate) {
+      return res.status(400).json({ error: 'Approved template not found for this workspace' });
+    }
+
+    let components;
+    if (Array.isArray(template_parameters) && template_parameters.length > 0) {
+      components = [{
+        type: 'body',
+        parameters: template_parameters.map((value) => ({ type: 'text', text: String(value) })),
+      }];
+    }
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone_number,
+      type: 'template',
+      template: {
+        name: approvedTemplate.template_name,
+        language: { code: String(language || approvedTemplate.language || config.default_template_language || 'es_LA') },
+        ...(components ? { components } : {}),
+      },
+    };
+
+    const metaRes = await fetch(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/${config.phone_number_id}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+
+    const metaData = await metaRes.json();
+    if (!metaRes.ok) {
+      return res.status(metaRes.status).json({
+        error: metaData.error?.message || 'Meta API Error',
+        details: metaData.error,
+      });
+    }
+
+    let resolvedThreadId = thread_id;
+    if (!resolvedThreadId) {
+      const resolved = await resolveContactAndThread({
+        tenantId,
+        phoneNumber: phone_number,
+        userId,
+        seedLastMessage: `[TPL] ${approvedTemplate.template_name}`,
+      });
+      resolvedThreadId = resolved.threadId;
+    }
+
+    const savedText = `[TPL] ${approvedTemplate.template_name}`;
+    const { data: saved } = await supabaseAdmin
+      .from('whatsapp_messages')
+      .insert({
+        whatsapp_thread_id: resolvedThreadId,
+        message_text: savedText,
+        incoming: false,
+        read: false,
+        sent_at: new Date().toISOString(),
+        created_by: userId,
+        updated_by: userId,
+      })
+      .select()
+      .single();
+
+    const windowState = await getConversationWindowState({
+      tenantId,
+      phoneNumber: phone_number,
+      explicitThreadId: resolvedThreadId || null,
+    });
+
+    await supabaseAdmin
+      .from('whatsapp_threads')
+      .update({
+        last_message: savedText,
+        last_interaction: new Date().toISOString(),
+        window_open: windowState.windowOpen,
+        window_expires_at: windowState.windowExpiresAt,
+        last_inbound_at: windowState.lastInboundAt,
+        updated_by: userId,
+      })
+      .eq('id', resolvedThreadId);
+
+    return res.status(201).json({
+      success: true,
+      message: saved,
+      wa_response: metaData,
+      template_name: approvedTemplate.template_name,
+    });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

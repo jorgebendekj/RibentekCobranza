@@ -2,7 +2,7 @@
   "info": {
     "name": "Aicobranzas - WhatsApp Cloud API QA",
     "_postman_id": "f72fd42b-6d4d-4e9f-88be-0d38d89fdb01",
-    "description": "QA collection for WhatsApp Cloud API, webhook flow, and tenant security checks.",
+    "description": "QA collection for WhatsApp Cloud API, window policy, templates, and tenant isolation.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -37,18 +37,9 @@
             "meta"
           ],
           "query": [
-            {
-              "key": "hub.mode",
-              "value": "subscribe"
-            },
-            {
-              "key": "hub.verify_token",
-              "value": "{{verify_token}}"
-            },
-            {
-              "key": "hub.challenge",
-              "value": "{{challenge}}"
-            }
+            { "key": "hub.mode", "value": "subscribe" },
+            { "key": "hub.verify_token", "value": "{{verify_token}}" },
+            { "key": "hub.challenge", "value": "{{challenge}}" }
           ]
         }
       }
@@ -68,18 +59,9 @@
             "meta"
           ],
           "query": [
-            {
-              "key": "hub.mode",
-              "value": "subscribe"
-            },
-            {
-              "key": "hub.verify_token",
-              "value": "wrong_token"
-            },
-            {
-              "key": "hub.challenge",
-              "value": "123"
-            }
+            { "key": "hub.mode", "value": "subscribe" },
+            { "key": "hub.verify_token", "value": "wrong_token" },
+            { "key": "hub.challenge", "value": "123" }
           ]
         }
       }
@@ -89,18 +71,9 @@
       "request": {
         "method": "POST",
         "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "Authorization",
-            "value": "Bearer {{auth_token}}"
-          },
-          {
-            "key": "x-tenant-id",
-            "value": "{{tenant_id}}"
-          }
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" }
         ],
         "body": {
           "mode": "raw",
@@ -121,26 +94,98 @@
       }
     },
     {
+      "name": "Send Message - Window Closed (Expected 409)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"phone_number\": \"{{target_phone_number_closed}}\",\n  \"message_text\": \"This should fail with WINDOW_CLOSED\"\n}"
+        },
+        "url": {
+          "raw": "{{admin_base_url}}/api/meta/messages/send",
+          "host": [
+            "{{admin_base_url}}"
+          ],
+          "path": [
+            "api",
+            "meta",
+            "messages",
+            "send"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Send Template Message - Approved",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"phone_number\": \"{{target_phone_number_closed}}\",\n  \"template_id\": \"{{template_id}}\",\n  \"thread_id\": \"{{thread_id}}\"\n}"
+        },
+        "url": {
+          "raw": "{{admin_base_url}}/api/meta/messages/send-template",
+          "host": [
+            "{{admin_base_url}}"
+          ],
+          "path": [
+            "api",
+            "meta",
+            "messages",
+            "send-template"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Send Template Message - Not Approved (Expected 400)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"phone_number\": \"{{target_phone_number_closed}}\",\n  \"template_name\": \"{{template_name_not_approved}}\"\n}"
+        },
+        "url": {
+          "raw": "{{admin_base_url}}/api/meta/messages/send-template",
+          "host": [
+            "{{admin_base_url}}"
+          ],
+          "path": [
+            "api",
+            "meta",
+            "messages",
+            "send-template"
+          ]
+        }
+      }
+    },
+    {
       "name": "Send Message - Missing Phone Number",
       "request": {
         "method": "POST",
         "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "Authorization",
-            "value": "Bearer {{auth_token}}"
-          },
-          {
-            "key": "x-tenant-id",
-            "value": "{{tenant_id}}"
-          }
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" }
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"message_text\": \"No phone\",\n  \"thread_id\": \"{{thread_id}}\"\n}"
+          "raw": "{\n  \"message_text\": \"No phone\"\n}"
         },
         "url": {
           "raw": "{{admin_base_url}}/api/meta/messages/send",
@@ -161,18 +206,9 @@
       "request": {
         "method": "POST",
         "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "Authorization",
-            "value": "Bearer {{auth_token}}"
-          },
-          {
-            "key": "x-tenant-id",
-            "value": "{{tenant_id_wrong}}"
-          }
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+          { "key": "x-tenant-id", "value": "{{tenant_id_wrong}}" }
         ],
         "body": {
           "mode": "raw",
@@ -193,90 +229,12 @@
       }
     },
     {
-      "name": "Upsert Meta Configuration",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "Authorization",
-            "value": "Bearer {{auth_token}}"
-          },
-          {
-            "key": "x-tenant-id",
-            "value": "{{tenant_id}}"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"channel_name\": \"QA\",\n  \"meta_id\": \"{{meta_id}}\",\n  \"waba_id\": \"{{waba_id}}\",\n  \"phone_number_id\": \"{{phone_number_id}}\",\n  \"token\": \"{{meta_token}}\",\n  \"verify_token\": \"{{verify_token}}\",\n  \"default_template_language\": \"es_LA\"\n}"
-        },
-        "url": {
-          "raw": "{{admin_base_url}}/api/meta/configurations/upsert",
-          "host": [
-            "{{admin_base_url}}"
-          ],
-          "path": [
-            "api",
-            "meta",
-            "configurations",
-            "upsert"
-          ]
-        }
-      }
-    },
-    {
-      "name": "Create Meta Template",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          },
-          {
-            "key": "Authorization",
-            "value": "Bearer {{auth_token}}"
-          },
-          {
-            "key": "x-tenant-id",
-            "value": "{{tenant_id}}"
-          }
-        ],
-        "body": {
-          "mode": "raw",
-          "raw": "{\n  \"name\": \"qa_test_template\",\n  \"language\": \"es_LA\",\n  \"category\": \"UTILITY\",\n  \"components\": [\n    {\n      \"type\": \"BODY\",\n      \"text\": \"Hola {{1}}, este es un test QA\"\n    }\n  ],\n  \"args\": [\"nombre\"]\n}"
-        },
-        "url": {
-          "raw": "{{admin_base_url}}/api/meta/templates/create",
-          "host": [
-            "{{admin_base_url}}"
-          ],
-          "path": [
-            "api",
-            "meta",
-            "templates",
-            "create"
-          ]
-        }
-      }
-    },
-    {
       "name": "Sync Meta Templates",
       "request": {
         "method": "GET",
         "header": [
-          {
-            "key": "Authorization",
-            "value": "Bearer {{auth_token}}"
-          },
-          {
-            "key": "x-tenant-id",
-            "value": "{{tenant_id}}"
-          }
+          { "key": "Authorization", "value": "Bearer {{auth_token}}" },
+          { "key": "x-tenant-id", "value": "{{tenant_id}}" }
         ],
         "url": {
           "raw": "{{admin_base_url}}/api/meta/templates/sync?mode=pending",
@@ -290,10 +248,7 @@
             "sync"
           ],
           "query": [
-            {
-              "key": "mode",
-              "value": "pending"
-            }
+            { "key": "mode", "value": "pending" }
           ]
         }
       }
@@ -301,4 +256,3 @@
   ],
   "event": []
 }
-

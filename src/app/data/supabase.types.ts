@@ -197,6 +197,9 @@ export type Database = {
           contact_id: string;
           last_message: string | null;
           last_interaction: string | null;
+          last_inbound_at: string | null;
+          window_open: boolean;
+          window_expires_at: string | null;
           tenant_id: string;
           created_at: string;
           updated_at: string;

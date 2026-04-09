@@ -71,6 +71,11 @@ export const whatsappService = {
     return (data ?? []) as WhatsappTemplate[];
   },
 
+  async getApprovedTemplates(tenantId: string): Promise<WhatsappTemplate[]> {
+    const templates = await this.getTemplates(tenantId);
+    return templates.filter((template) => String(template.meta_status).toUpperCase() === 'APPROVED');
+  },
+
   /** Create a template */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async createTemplate(payload: TemplateInsert): Promise<WhatsappTemplate> {
@@ -152,8 +157,46 @@ export const whatsappService = {
       body: JSON.stringify(payload),
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Error enviando mensaje');
+    if (!res.ok) {
+      const err = new Error(json.message || json.error || 'Error enviando mensaje') as Error & {
+        code?: string;
+        window_open?: boolean;
+      };
+      err.code = json.error;
+      err.window_open = json.window_open;
+      throw err;
+    }
     return json as { success: boolean; message?: Record<string, unknown> };
+  },
+
+  async sendTemplateMessage(
+    tenantId: string,
+    payload: {
+      phone_number: string;
+      template_id?: string;
+      template_name?: string;
+      language?: string;
+      template_parameters?: string[];
+      thread_id?: string;
+    }
+  ) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = getAdminBaseUrl();
+
+    const res = await fetch(`${adminUrl}/api/meta/messages/send-template`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.message || json.error || 'Error enviando plantilla');
+    return json as { success: boolean; message?: Record<string, unknown>; template_name?: string };
   },
 
   /** Search contacts by name or phone within a tenant */

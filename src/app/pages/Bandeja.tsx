@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate, useLocation } from "react-router";
 import {
   Search, MessageSquare, Phone, Clock, Bot, User, CheckCheck, Send,
@@ -47,6 +47,7 @@ export function Bandeja() {
   const [message, setMessage] = useState("");
   const [mode, setMode] = useState<"threads" | "new-contact">("threads");
   const [pendingContact, setPendingContact] = useState<Contact | null>(null);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
 
   // Read contact from navigation state (coming from Contactos page)
   useEffect(() => {
@@ -102,6 +103,12 @@ export function Bandeja() {
     enabled: mode === "new-contact" && !!tenantId && debouncedSearch.length >= 1,
     staleTime: 30_000,
   });
+  const { data: approvedTemplates = [], isLoading: templatesLoading } = useQuery({
+    queryKey: ["approved-templates", tenantId],
+    queryFn: () => whatsappService.getApprovedTemplates(tenantId!),
+    enabled: !!tenantId,
+    staleTime: 60_000,
+  });
 
   // ── Mutations ─────────────────────────────────────────────────
   const sendMutation = useMutation({
@@ -109,6 +116,7 @@ export function Bandeja() {
       if (!tenantId) throw new Error("No hay workspace seleccionado");
       const phoneNumber = selectedThread?.contacts?.phone_number ?? pendingContact?.phone_number;
       if (!phoneNumber) throw new Error("Este contacto no tiene número de WhatsApp");
+      if (!isWindowOpen) throw new Error("Ventana de 24h cerrada. Usa una plantilla aprobada.");
       return whatsappService.sendMessage(tenantId, {
         phone_number: phoneNumber,
         message_text: message.trim(),
@@ -150,9 +158,50 @@ export function Bandeja() {
     },
   });
 
+  const sendTemplateMutation = useMutation({
+    mutationFn: async () => {
+      if (!tenantId) throw new Error("No hay workspace seleccionado");
+      if (!activePhone) throw new Error("Este contacto no tiene número de WhatsApp");
+      if (!selectedTemplateId) throw new Error("Selecciona una plantilla aprobada");
+      return whatsappService.sendTemplateMessage(tenantId, {
+        phone_number: activePhone,
+        template_id: selectedTemplateId,
+        thread_id: selectedThreadId ?? undefined,
+      });
+    },
+    onSuccess: async () => {
+      setMessage("");
+      await qc.invalidateQueries({ queryKey: [MESSAGES_KEY, selectedThreadId] });
+      await qc.invalidateQueries({ queryKey: [THREADS_KEY, tenantId] });
+
+      if (!selectedThreadId && tenantId && activePhone) {
+        const refreshedThreads = await qc.fetchQuery({
+          queryKey: [THREADS_KEY, tenantId],
+          queryFn: () => threadsService.getThreads(tenantId),
+        });
+        const matchedThread = refreshedThreads.find(
+          (thread) => thread.contacts?.phone_number === activePhone
+        );
+        if (matchedThread) {
+          setSelectedThreadId(matchedThread.id);
+          setPendingContact(null);
+        }
+      }
+      toast.success("Plantilla enviada correctamente");
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || "No se pudo enviar la plantilla");
+    },
+  });
+
   const handleSend = () => {
     if (!message.trim() || sendMutation.isPending) return;
     sendMutation.mutate();
+  };
+
+  const handleSendTemplate = () => {
+    if (sendTemplateMutation.isPending) return;
+    sendTemplateMutation.mutate();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -199,6 +248,12 @@ export function Bandeja() {
   const selectedThread: ThreadWithContact | null =
     threads.find(t => t.id === selectedThreadId) ?? null;
 
+  // Active thread details (may be pendingContact when no thread yet)
+  const activeContactName = selectedThread?.contacts?.name ?? pendingContact?.name ?? "";
+  const activePhone = selectedThread?.contacts?.phone_number ?? pendingContact?.phone_number ?? "";
+  const isActive = !!selectedThread || !!pendingContact;
+  const isWindowOpen = selectedThread?.window_open ?? false;
+
   // ── Helpers ───────────────────────────────────────────────────
   const formatRelativeTime = (iso: string | null) => {
     if (!iso) return "";
@@ -230,10 +285,9 @@ export function Bandeja() {
     return <Badge variant="outline" className={`text-[10px] font-medium ${c.className}`}>{c.label}</Badge>;
   };
 
-  // Active thread details (may be pendingContact when no thread yet)
-  const activeContactName = selectedThread?.contacts?.name ?? pendingContact?.name ?? "";
-  const activePhone = selectedThread?.contacts?.phone_number ?? pendingContact?.phone_number ?? "";
-  const isActive = !!selectedThread || !!pendingContact;
+  useEffect(() => {
+    setSelectedTemplateId("");
+  }, [selectedThreadId, pendingContact?.id]);
 
   // ── Render ────────────────────────────────────────────────────
   return (
@@ -422,6 +476,18 @@ export function Bandeja() {
                             <span className="text-slate-300">·</span>
                           )}
                           {selectedThread && estadoBadge(getEstado(selectedThread))}
+                          {isActive && (
+                            <Badge
+                              variant="outline"
+                              className={`text-[10px] font-medium ${
+                                isWindowOpen
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                  : "bg-amber-50 text-amber-700 border-amber-200"
+                              }`}
+                            >
+                              {isWindowOpen ? "Ventana activa" : "Solo plantilla"}
+                            </Badge>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -509,38 +575,78 @@ export function Bandeja() {
                         Este contacto no tiene número de WhatsApp registrado.
                       </p>
                     ) : (
-                      <div className="flex items-end gap-2">
-                        <Textarea
-                          id="bandeja-message-input"
-                          ref={messageInputRef}
-                          placeholder="Escribe un mensaje... (Enter para enviar, Shift+Enter para nueva línea)"
-                          value={message}
-                          onChange={(e) => setMessage(e.target.value)}
-                          onKeyDown={handleKeyDown}
-                          rows={1}
-                          className="flex-1 resize-none max-h-32 text-sm border-slate-200 bg-slate-50 focus-visible:ring-blue-500 rounded-xl overflow-y-auto"
-                          style={{ minHeight: "42px", height: "auto" }}
-                          disabled={sendMutation.isPending}
-                        />
-                        <Button
-                          id="bandeja-send-btn"
-                          size="icon"
-                          className={`shrink-0 size-[42px] rounded-xl transition-all ${
-                            message.trim() && !sendMutation.isPending
-                              ? "bg-blue-600 hover:bg-blue-700 shadow-md hover:shadow-blue-200"
-                              : "bg-slate-200 cursor-not-allowed"
-                          }`}
-                          onClick={handleSend}
-                          disabled={!message.trim() || sendMutation.isPending}
-                          aria-label="Enviar mensaje"
-                        >
-                          {sendMutation.isPending ? (
-                            <Loader2 className="size-4 animate-spin text-slate-500" />
-                          ) : (
-                            <Send className={`size-4 ${message.trim() ? "text-white" : "text-slate-400"}`} />
-                          )}
-                        </Button>
-                      </div>
+                      <>
+                        {!isWindowOpen ? (
+                          <div className="space-y-2">
+                            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+                              Ventana de 24h cerrada. Solo puedes enviar plantilla aprobada hasta que el cliente responda.
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <select
+                                id="bandeja-template-select"
+                                value={selectedTemplateId}
+                                onChange={(e) => setSelectedTemplateId(e.target.value)}
+                                className="flex-1 h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                disabled={templatesLoading || sendTemplateMutation.isPending}
+                              >
+                                <option value="">
+                                  {templatesLoading ? "Cargando plantillas..." : "Selecciona plantilla aprobada"}
+                                </option>
+                                {approvedTemplates.map((template) => (
+                                  <option key={template.id} value={template.id}>
+                                    {template.template_name}
+                                  </option>
+                                ))}
+                              </select>
+                              <Button
+                                id="bandeja-send-template-btn"
+                                className="h-10 rounded-xl px-4"
+                                onClick={handleSendTemplate}
+                                disabled={!selectedTemplateId || sendTemplateMutation.isPending}
+                              >
+                                {sendTemplateMutation.isPending ? (
+                                  <Loader2 className="size-4 animate-spin" />
+                                ) : (
+                                  "Enviar plantilla"
+                                )}
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-end gap-2">
+                            <Textarea
+                              id="bandeja-message-input"
+                              ref={messageInputRef}
+                              placeholder="Escribe un mensaje... (Enter para enviar, Shift+Enter para nueva línea)"
+                              value={message}
+                              onChange={(e) => setMessage(e.target.value)}
+                              onKeyDown={handleKeyDown}
+                              rows={1}
+                              className="flex-1 resize-none max-h-32 text-sm border-slate-200 bg-slate-50 focus-visible:ring-blue-500 rounded-xl overflow-y-auto"
+                              style={{ minHeight: "42px", height: "auto" }}
+                              disabled={sendMutation.isPending}
+                            />
+                            <Button
+                              id="bandeja-send-btn"
+                              size="icon"
+                              className={`shrink-0 size-[42px] rounded-xl transition-all ${
+                                message.trim() && !sendMutation.isPending
+                                  ? "bg-blue-600 hover:bg-blue-700 shadow-md hover:shadow-blue-200"
+                                  : "bg-slate-200 cursor-not-allowed"
+                              }`}
+                              onClick={handleSend}
+                              disabled={!message.trim() || sendMutation.isPending}
+                              aria-label="Enviar mensaje"
+                            >
+                              {sendMutation.isPending ? (
+                                <Loader2 className="size-4 animate-spin text-slate-500" />
+                              ) : (
+                                <Send className={`size-4 ${message.trim() ? "text-white" : "text-slate-400"}`} />
+                              )}
+                            </Button>
+                          </div>
+                        )}
+                      </>
                     )}
                     {/* Hint */}
                     <div className="flex items-center gap-1.5 mt-1.5 px-1">
