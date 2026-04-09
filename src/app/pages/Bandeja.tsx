@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useNavigate, useLocation } from "react-router";
 import {
   Search, MessageSquare, Phone, Clock, Bot, User, CheckCheck, Send,
   X, Plus, ChevronRight, Loader2, UserSearch,
@@ -37,12 +38,28 @@ function useDebounce<T>(value: T, ms = 350): T {
 export function Bandeja() {
   const { tenantId } = useAuth();
   const qc = useQueryClient();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   // UI State
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [mode, setMode] = useState<"threads" | "new-contact">("threads");
+  const [pendingContact, setPendingContact] = useState<Contact | null>(null);
+
+  // Read contact from navigation state (coming from Contactos page)
+  useEffect(() => {
+    const navContact = (location.state as { contact?: Contact } | null)?.contact;
+    if (navContact) {
+      setPendingContact(navContact);
+      setSelectedThreadId(null);
+      // Clear the navigation state so it doesn't re-trigger
+      navigate(location.pathname, { replace: true, state: {} });
+      // Auto-focus the input
+      setTimeout(() => messageInputRef.current?.focus(), 100);
+    }
+  }, [location.state]);
 
   // Contact search for "new chat"
   const debouncedSearch = useDebounce(searchTerm, 350);
@@ -73,6 +90,7 @@ export function Bandeja() {
 
   // Auto-scroll to bottom when messages change
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [allMessages.length]);
@@ -131,25 +149,23 @@ export function Bandeja() {
       toast.error("Este contacto no tiene número de WhatsApp registrado");
       return;
     }
-    // Select existing thread if any, otherwise the send handler will create it
+    // Select existing thread if any
     const existingThread = threads.find(
       t => t.contacts?.phone_number === contact.phone_number
     );
     if (existingThread) {
       setSelectedThreadId(existingThread.id);
+      setPendingContact(null);
       setMode("threads");
       setSearchTerm("");
       return;
     }
-    // Pre-fill the contact's phone — user still needs to type and send a message
+    // No existing thread — store as pending contact
+    setPendingContact(contact);
     setMode("threads");
     setSearchTerm("");
-    toast.info(`Selecciona a ${contact.name} y envía el primer mensaje.`);
-    // We need a placeholder thread approach — store the contact for usage
-    setPendingContact(contact);
+    setTimeout(() => messageInputRef.current?.focus(), 100);
   };
-
-  const [pendingContact, setPendingContact] = useState<Contact | null>(null);
 
   // ── Filtering (threads mode) ───────────────────────────────────
   const filteredThreads = threads.filter((t) => {
@@ -477,6 +493,7 @@ export function Bandeja() {
                       <div className="flex items-end gap-2">
                         <Textarea
                           id="bandeja-message-input"
+                          ref={messageInputRef}
                           placeholder="Escribe un mensaje... (Enter para enviar, Shift+Enter para nueva línea)"
                           value={message}
                           onChange={(e) => setMessage(e.target.value)}

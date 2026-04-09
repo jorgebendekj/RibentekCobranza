@@ -170,9 +170,14 @@ export type Database = {
           updated_by: string | null;
           deleted_by: string | null;
         };
-        Insert: Omit<Database['public']['Tables']['whatsapp_templates']['Row'], 'id' | 'created_at' | 'updated_at'> & {
+        Insert: {
           id?: string;
+          whatsapp_configuration_id: string;
+          template_name: string;
+          format_type: Database['public']['Enums']['template_format_type'];
+          args: string[];
           meta_status?: string;
+          meta_template_id?: string | null;
           language?: string;
           category?: string;
           components?: Json;

@@ -72,10 +72,11 @@ export const whatsappService = {
   },
 
   /** Create a template */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async createTemplate(payload: TemplateInsert): Promise<WhatsappTemplate> {
     const { data, error } = await supabase
       .from('whatsapp_templates')
-      .insert(payload)
+      .insert(payload as any) // Cast: Supabase client schema lags behind local types until migration is applied
       .select()
       .single();
     if (error) throw error;
