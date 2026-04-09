@@ -106,17 +106,36 @@ export function Bandeja() {
   // ── Mutations ─────────────────────────────────────────────────
   const sendMutation = useMutation({
     mutationFn: async () => {
-      if (!tenantId || !selectedThread?.contacts?.phone_number) return;
+      if (!tenantId) throw new Error("No hay workspace seleccionado");
+      const phoneNumber = selectedThread?.contacts?.phone_number ?? pendingContact?.phone_number;
+      if (!phoneNumber) throw new Error("Este contacto no tiene número de WhatsApp");
       return whatsappService.sendMessage(tenantId, {
-        phone_number: selectedThread.contacts.phone_number,
+        phone_number: phoneNumber,
         message_text: message.trim(),
         thread_id: selectedThreadId ?? undefined,
       });
     },
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
+      const sentToPhone = selectedThread?.contacts?.phone_number ?? pendingContact?.phone_number;
       setMessage("");
-      qc.invalidateQueries({ queryKey: [MESSAGES_KEY, selectedThreadId] });
-      qc.invalidateQueries({ queryKey: [THREADS_KEY, tenantId] });
+      await qc.invalidateQueries({ queryKey: [MESSAGES_KEY, selectedThreadId] });
+      await qc.invalidateQueries({ queryKey: [THREADS_KEY, tenantId] });
+
+      // If this came from "new chat" flow, try selecting the created/reused thread.
+      if (!selectedThreadId && tenantId && sentToPhone) {
+        const refreshedThreads = await qc.fetchQuery({
+          queryKey: [THREADS_KEY, tenantId],
+          queryFn: () => threadsService.getThreads(tenantId),
+        });
+        const matchedThread = refreshedThreads.find(
+          (thread) => thread.contacts?.phone_number === sentToPhone
+        );
+        if (matchedThread) {
+          setSelectedThreadId(matchedThread.id);
+          setPendingContact(null);
+        }
+      }
+
       // Optimistically show sent message immediately
       if (result?.message) {
         // Realtime will pick it up via Supabase channels
