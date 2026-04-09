@@ -1,13 +1,16 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import {
-  Search, MessageSquare, Phone, Clock, Bot, User, CheckCheck, X,
+  Search, MessageSquare, Phone, Clock, Bot, User, CheckCheck, Send,
+  X, Plus, ChevronRight, Loader2, UserSearch,
 } from "lucide-react";
 import { Card, CardContent } from "../components/ui/card";
 import { Input } from "../components/ui/input";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Skeleton } from "../components/ui/skeleton";
-import { useQueryClient } from "@tanstack/react-query";
+import { Textarea } from "../components/ui/textarea";
+import { useQueryClient, useMutation, useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   useThreads,
   useMessages,
@@ -17,43 +20,138 @@ import {
   MESSAGES_KEY,
 } from "../hooks/useThreads";
 import { threadsService } from "../services/threads.service";
+import { whatsappService } from "../services/whatsapp.service";
 import { useAuth } from "../context/AuthContext";
-import type { ThreadWithContact } from "../data/supabase.types";
+import type { ThreadWithContact, Contact } from "../data/supabase.types";
+
+// ── Small helper: debounce ──────────────────────────────────────
+function useDebounce<T>(value: T, ms = 350): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return debounced;
+}
 
 export function Bandeja() {
   const { tenantId } = useAuth();
   const qc = useQueryClient();
+
+  // UI State
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
+  const [mode, setMode] = useState<"threads" | "new-contact">("threads");
 
-  // ── Data ──────────────────────────────────────────────────
+  // Contact search for "new chat"
+  const debouncedSearch = useDebounce(searchTerm, 350);
+
+  // ── Data ──────────────────────────────────────────────────────
   const { data: threads = [], isLoading: threadsLoading } = useThreads();
-  const { data: messages = [] } = useMessages(selectedThreadId);
+  const { data: messages = [], isLoading: messagesLoading } = useMessages(selectedThreadId);
 
-  // Supabase Realtime — new messages arrive here
+  // Realtime
   const realtimeMessages = useRealtimeMessages(selectedThreadId);
-
-  // Merge persisted + realtime messages (dedupe by id)
-  const allMessages = [
+  const allMessages = useMemo(() => [
     ...messages,
     ...realtimeMessages.filter(rm => !messages.some(m => m.id === rm.id)),
-  ];
+  ], [messages, realtimeMessages]);
 
-  // Supabase Realtime — thread list updates
   const onThreadsUpdate = useCallback(() => {
     qc.invalidateQueries({ queryKey: [THREADS_KEY, tenantId] });
   }, [qc, tenantId]);
   useRealtimeThreads(tenantId, onThreadsUpdate);
 
-  // Mark thread as read when selected
+  // Mark-read when selecting thread
   useEffect(() => {
     if (selectedThreadId) {
       threadsService.markThreadRead(selectedThreadId).catch(() => null);
       qc.invalidateQueries({ queryKey: [MESSAGES_KEY, selectedThreadId] });
     }
-  }, [selectedThreadId]);
+  }, [selectedThreadId, qc]);
 
-  // ── Filtering ─────────────────────────────────────────────
+  // Auto-scroll to bottom when messages change
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [allMessages.length]);
+
+  // ── Contact search (for new chat) ─────────────────────────────
+  const { data: contactResults = [], isFetching: contactSearching } = useQuery({
+    queryKey: ["contact-search", tenantId, debouncedSearch],
+    queryFn: () => whatsappService.searchContacts(tenantId!, debouncedSearch),
+    enabled: mode === "new-contact" && !!tenantId && debouncedSearch.length >= 1,
+    staleTime: 30_000,
+  });
+
+  // ── Mutations ─────────────────────────────────────────────────
+  const sendMutation = useMutation({
+    mutationFn: async () => {
+      if (!tenantId || !selectedThread?.contacts?.phone_number) return;
+      return whatsappService.sendMessage(tenantId, {
+        phone_number: selectedThread.contacts.phone_number,
+        message_text: message.trim(),
+        thread_id: selectedThreadId ?? undefined,
+      });
+    },
+    onSuccess: (result) => {
+      setMessage("");
+      qc.invalidateQueries({ queryKey: [MESSAGES_KEY, selectedThreadId] });
+      qc.invalidateQueries({ queryKey: [THREADS_KEY, tenantId] });
+      // Optimistically show sent message immediately
+      if (result?.message) {
+        // Realtime will pick it up via Supabase channels
+      }
+    },
+    onError: (err: Error) => {
+      toast.error(err.message || "No se pudo enviar el mensaje", {
+        description: err.message.includes("Ventana") || err.message.includes("window")
+          ? "La ventana de 24hs expiró. Inicia la conversación con una plantilla."
+          : undefined,
+      });
+    },
+  });
+
+  const handleSend = () => {
+    if (!message.trim() || sendMutation.isPending) return;
+    sendMutation.mutate();
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  // Start chat from a contact search result
+  const handleStartChat = async (contact: Contact) => {
+    if (!tenantId || !contact.phone_number) {
+      toast.error("Este contacto no tiene número de WhatsApp registrado");
+      return;
+    }
+    // Select existing thread if any, otherwise the send handler will create it
+    const existingThread = threads.find(
+      t => t.contacts?.phone_number === contact.phone_number
+    );
+    if (existingThread) {
+      setSelectedThreadId(existingThread.id);
+      setMode("threads");
+      setSearchTerm("");
+      return;
+    }
+    // Pre-fill the contact's phone — user still needs to type and send a message
+    setMode("threads");
+    setSearchTerm("");
+    toast.info(`Selecciona a ${contact.name} y envía el primer mensaje.`);
+    // We need a placeholder thread approach — store the contact for usage
+    setPendingContact(contact);
+  };
+
+  const [pendingContact, setPendingContact] = useState<Contact | null>(null);
+
+  // ── Filtering (threads mode) ───────────────────────────────────
   const filteredThreads = threads.filter((t) => {
     const q = searchTerm.toLowerCase();
     return (
@@ -63,107 +161,195 @@ export function Bandeja() {
     );
   });
 
-  const selectedThread = threads.find(t => t.id === selectedThreadId) ?? null;
+  const selectedThread: ThreadWithContact | null =
+    threads.find(t => t.id === selectedThreadId) ?? null;
 
-  // ── Helpers ───────────────────────────────────────────────
+  // ── Helpers ───────────────────────────────────────────────────
   const formatRelativeTime = (iso: string | null) => {
     if (!iso) return "";
     const diff = Date.now() - new Date(iso).getTime();
     const mins = Math.floor(diff / 60000);
-    if (mins < 60) return `Hace ${mins} min`;
+    if (mins < 1) return "Ahora";
+    if (mins < 60) return `${mins}m`;
     const hrs = Math.floor(mins / 60);
-    if (hrs < 24) return `Hace ${hrs} hora${hrs > 1 ? "s" : ""}`;
+    if (hrs < 24) return `${hrs}h`;
     const days = Math.floor(hrs / 24);
-    return `Hace ${days} día${days > 1 ? "s" : ""}`;
+    return `${days}d`;
   };
 
-  // A thread is "active" if last message was < 24h and not null
   const getEstado = (t: ThreadWithContact): "activo" | "resuelto" | "pendiente" => {
     if (!t.last_interaction) return "pendiente";
-    const diff = Date.now() - new Date(t.last_interaction).getTime();
-    const hrs = diff / 3600000;
+    const hrs = (Date.now() - new Date(t.last_interaction).getTime()) / 3_600_000;
     if (hrs < 1) return "activo";
     if (hrs < 48) return "pendiente";
     return "resuelto";
   };
 
-  const getEstadoBadge = (estado: string) => {
+  const estadoBadge = (estado: string) => {
     const cfg: Record<string, { className: string; label: string }> = {
-      activo:   { className: "bg-blue-50 text-blue-700 border-blue-200", label: "Activo" },
-      resuelto: { className: "bg-green-50 text-green-700 border-green-200", label: "Resuelto" },
-      pendiente:{ className: "bg-orange-50 text-orange-700 border-orange-200", label: "Pendiente" },
+      activo:    { className: "bg-emerald-50 text-emerald-700 border-emerald-200", label: "Activo" },
+      resuelto:  { className: "bg-slate-100 text-slate-600 border-slate-200",     label: "Resuelto" },
+      pendiente: { className: "bg-amber-50 text-amber-700 border-amber-200",       label: "Pendiente" },
     };
     const c = cfg[estado] ?? cfg.pendiente;
-    return <Badge variant="outline" className={c.className}>{c.label}</Badge>;
+    return <Badge variant="outline" className={`text-[10px] font-medium ${c.className}`}>{c.label}</Badge>;
   };
 
+  // Active thread details (may be pendingContact when no thread yet)
+  const activeContactName = selectedThread?.contacts?.name ?? pendingContact?.name ?? "";
+  const activePhone = selectedThread?.contacts?.phone_number ?? pendingContact?.phone_number ?? "";
+  const isActive = !!selectedThread || !!pendingContact;
+
+  // ── Render ────────────────────────────────────────────────────
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="font-semibold text-3xl text-slate-900">Bandeja de Conversaciones</h1>
-        <p className="text-slate-600 mt-2">Monitorea las interacciones en tiempo real con el agente de IA</p>
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="font-bold text-2xl text-slate-900 tracking-tight">Bandeja de Mensajes</h1>
+          <p className="text-slate-500 text-sm mt-0.5">
+            {threads.length} conversación{threads.length !== 1 ? "es" : ""} · Realtime activado
+          </p>
+        </div>
+        <Button
+          size="sm"
+          variant={mode === "new-contact" ? "default" : "outline"}
+          onClick={() => {
+            setMode(m => m === "new-contact" ? "threads" : "new-contact");
+            setSearchTerm("");
+          }}
+          className="gap-1.5"
+        >
+          {mode === "new-contact" ? (
+            <><X className="size-3.5" /> Cancelar</>
+          ) : (
+            <><Plus className="size-3.5" /> Nuevo chat</>
+          )}
+        </Button>
       </div>
 
-      <Card className="h-[calc(100vh-220px)]">
+      {/* Main chat container */}
+      <Card className="h-[calc(100vh-210px)] overflow-hidden border-slate-200 shadow-sm">
         <CardContent className="p-0 h-full">
           <div className="flex h-full">
-            {/* Sidebar */}
-            <div className="w-96 border-r border-slate-200 flex flex-col">
-              <div className="p-4 border-b border-slate-200">
+
+            {/* ── LEFT SIDEBAR ─────────────────────────────────── */}
+            <div className="w-80 shrink-0 border-r border-slate-100 flex flex-col bg-white">
+
+              {/* Search bar */}
+              <div className="p-3 border-b border-slate-100">
                 <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-slate-400 pointer-events-none" />
+                  {mode === "new-contact"
+                    ? <UserSearch className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-blue-500 pointer-events-none" />
+                    : null}
                   <Input
-                    placeholder="Buscar por cliente, teléfono o ID..."
+                    id="bandeja-search"
+                    placeholder={mode === "new-contact" ? "Buscar contacto..." : "Buscar conversación..."}
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    className="pl-10"
+                    className="pl-9 text-sm h-9 bg-slate-50 border-slate-200 focus-visible:ring-blue-500"
                   />
+                  {contactSearching && (
+                    <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 size-3.5 text-slate-400 animate-spin" />
+                  )}
                 </div>
               </div>
 
+              {/* List body */}
               <div className="flex-1 overflow-y-auto">
-                {threadsLoading ? (
-                  <div className="p-4 space-y-3">
-                    {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-20 w-full" />)}
+
+                {/* ── NEW CONTACT MODE ── */}
+                {mode === "new-contact" ? (
+                  debouncedSearch.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-slate-400 p-6 text-center gap-2">
+                      <UserSearch className="size-10 text-slate-300" />
+                      <p className="text-sm font-medium">Escribe un nombre o teléfono</p>
+                      <p className="text-xs">Buscaremos entre tus contactos registrados</p>
+                    </div>
+                  ) : contactResults.length === 0 && !contactSearching ? (
+                    <div className="flex flex-col items-center justify-center h-full text-slate-400 p-6 text-center gap-2">
+                      <Search className="size-10 text-slate-300" />
+                      <p className="text-sm font-medium">Sin resultados</p>
+                      <p className="text-xs">Agrega el cliente desde la sección Contactos</p>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-50">
+                      {contactResults.map(c => (
+                        <button
+                          key={c.id}
+                          onClick={() => handleStartChat(c)}
+                          className="w-full flex items-center gap-3 p-3.5 hover:bg-blue-50 transition-colors text-left group"
+                        >
+                          <div className="bg-blue-100 size-10 rounded-full flex items-center justify-center shrink-0">
+                            <User className="size-5 text-blue-600" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-sm text-slate-900 truncate">{c.name}</p>
+                            <p className="text-xs text-slate-500 truncate">{c.phone_number ?? "Sin número"}</p>
+                          </div>
+                          <ChevronRight className="size-4 text-slate-300 group-hover:text-blue-500 transition-colors" />
+                        </button>
+                      ))}
+                    </div>
+                  )
+
+                /* ── THREADS MODE ── */
+                ) : threadsLoading ? (
+                  <div className="p-3 space-y-2">
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <div key={i} className="flex items-center gap-3 p-2">
+                        <Skeleton className="size-10 rounded-full shrink-0" />
+                        <div className="flex-1 space-y-1.5">
+                          <Skeleton className="h-3 w-3/4" />
+                          <Skeleton className="h-2.5 w-1/2" />
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 ) : filteredThreads.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center h-full text-slate-500 p-8 text-center">
-                    <MessageSquare className="size-12 mb-3 text-slate-300" />
-                    <p className="font-medium">No se encontraron conversaciones</p>
-                    <p className="text-sm mt-1">Intenta con otro término</p>
+                  <div className="flex flex-col items-center justify-center h-full text-slate-400 p-6 text-center gap-2">
+                    <MessageSquare className="size-10 text-slate-300" />
+                    <p className="text-sm font-medium">
+                      {searchTerm ? "Sin resultados" : "Sin conversaciones"}
+                    </p>
+                    <p className="text-xs">
+                      {searchTerm ? "Prueba otro término" : 'Usa "Nuevo chat" para iniciar'}
+                    </p>
                   </div>
                 ) : (
-                  <div className="divide-y divide-slate-100">
+                  <div className="divide-y divide-slate-50">
                     {filteredThreads.map((t) => {
                       const estado = getEstado(t);
+                      const isSelected = selectedThreadId === t.id;
                       return (
-                        <div
+                        <button
                           key={t.id}
-                          onClick={() => setSelectedThreadId(t.id)}
-                          className={`p-4 cursor-pointer hover:bg-slate-50 transition-colors ${
-                            selectedThreadId === t.id ? "bg-blue-50 border-l-4 border-l-blue-600" : ""
+                          onClick={() => { setSelectedThreadId(t.id); setPendingContact(null); }}
+                          className={`w-full flex items-start gap-3 p-3.5 transition-colors text-left ${
+                            isSelected
+                              ? "bg-blue-50 border-l-2 border-l-blue-600"
+                              : "hover:bg-slate-50"
                           }`}
                         >
-                          <div className="flex items-start gap-3">
-                            <div className="bg-slate-200 size-12 rounded-full flex items-center justify-center shrink-0">
-                              <User className="size-6 text-slate-600" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-start justify-between gap-2 mb-1">
-                                <h3 className="font-medium text-slate-900 truncate">{t.contacts?.name ?? "Desconocido"}</h3>
-                                <span className="text-xs text-slate-500 shrink-0">{formatRelativeTime(t.last_interaction)}</span>
-                              </div>
-                              <div className="flex items-center gap-2 mb-1">
-                                <Phone className="size-3 text-slate-400" />
-                                <p className="text-xs text-slate-600">{t.contacts?.phone_number ?? "—"}</p>
-                              </div>
-                              <p className="text-sm text-slate-600 truncate mb-2">{t.last_message ?? "Sin mensajes"}</p>
-                              <div className="flex items-center justify-between">
-                                {getEstadoBadge(estado)}
-                              </div>
-                            </div>
+                          <div className={`size-10 rounded-full flex items-center justify-center shrink-0 ${
+                            estado === "activo" ? "bg-emerald-100" : "bg-slate-100"
+                          }`}>
+                            <User className={`size-5 ${estado === "activo" ? "text-emerald-600" : "text-slate-500"}`} />
                           </div>
-                        </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-1 mb-0.5">
+                              <span className="font-semibold text-sm text-slate-900 truncate">
+                                {t.contacts?.name ?? "Desconocido"}
+                              </span>
+                              <span className="text-[10px] text-slate-400 shrink-0">
+                                {formatRelativeTime(t.last_interaction)}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500 truncate mb-1.5">{t.last_message ?? "—"}</p>
+                            {estadoBadge(estado)}
+                          </div>
+                        </button>
                       );
                     })}
                   </div>
@@ -171,92 +357,172 @@ export function Bandeja() {
               </div>
             </div>
 
-            {/* Message panel */}
-            <div className="flex-1 flex flex-col">
-              {!selectedThread ? (
-                <div className="flex flex-col items-center justify-center h-full text-slate-500">
-                  <MessageSquare className="size-20 mb-4 text-slate-300" />
-                  <h2 className="text-xl font-medium mb-2">Selecciona una conversación</h2>
-                  <p className="text-sm">Elige una conversación de la lista para ver el historial completo</p>
+            {/* ── RIGHT: CHAT PANEL ─────────────────────────────── */}
+            <div className="flex-1 flex flex-col bg-[#f7f8fc] min-w-0">
+              {!isActive ? (
+                /* Empty state */
+                <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-3">
+                  <div className="bg-slate-100 p-5 rounded-full">
+                    <MessageSquare className="size-10 text-slate-300" />
+                  </div>
+                  <div className="text-center">
+                    <p className="font-semibold text-slate-600">Selecciona una conversación</p>
+                    <p className="text-sm mt-1">o inicia un nuevo chat con un contacto</p>
+                  </div>
                 </div>
               ) : (
                 <>
-                  {/* Header */}
-                  <div className="border-b border-slate-200 p-4 bg-slate-50">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="bg-slate-300 size-12 rounded-full flex items-center justify-center">
-                          <User className="size-6 text-slate-600" />
-                        </div>
-                        <div>
-                          <h2 className="font-semibold text-lg text-slate-900">{selectedThread.contacts?.name}</h2>
-                          <div className="flex items-center gap-2 text-sm text-slate-600">
-                            <Phone className="size-3" />
-                            <span>{selectedThread.contacts?.phone_number}</span>
-                          </div>
-                        </div>
+                  {/* Chat header */}
+                  <div className="bg-white border-b border-slate-100 px-5 py-3.5 flex items-center justify-between shrink-0 shadow-sm">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-blue-100 size-10 rounded-full flex items-center justify-center">
+                        <User className="size-5 text-blue-600" />
                       </div>
-                      <div className="flex items-center gap-3">
-                        {getEstadoBadge(getEstado(selectedThread))}
-                        <Button variant="ghost" size="sm" onClick={() => setSelectedThreadId(null)}>
-                          <X className="size-4" />
-                        </Button>
+                      <div>
+                        <h2 className="font-semibold text-slate-900 leading-tight">{activeContactName}</h2>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <Phone className="size-3 text-slate-400" />
+                          <span className="text-xs text-slate-500">{activePhone}</span>
+                          {selectedThread && (
+                            <span className="text-slate-300">·</span>
+                          )}
+                          {selectedThread && estadoBadge(getEstado(selectedThread))}
+                        </div>
                       </div>
                     </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8 text-slate-400 hover:text-slate-600"
+                      onClick={() => { setSelectedThreadId(null); setPendingContact(null); }}
+                    >
+                      <X className="size-4" />
+                    </Button>
                   </div>
 
-                  {/* Messages */}
-                  <div className="flex-1 overflow-y-auto p-6 bg-slate-50">
-                    <div className="space-y-4">
-                      {allMessages.map((msg) => {
+                  {/* Messages area */}
+                  <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+                    {messagesLoading ? (
+                      <div className="space-y-3">
+                        {Array.from({ length: 4 }).map((_, i) => (
+                          <div key={i} className={`flex ${i % 2 === 0 ? "justify-start" : "justify-end"}`}>
+                            <Skeleton className={`h-14 rounded-2xl ${i % 2 === 0 ? "w-64" : "w-48"}`} />
+                          </div>
+                        ))}
+                      </div>
+                    ) : allMessages.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-2">
+                        <MessageSquare className="size-8 text-slate-300" />
+                        <p className="text-sm">Sin mensajes aún. ¡Sé el primero en escribir!</p>
+                      </div>
+                    ) : (
+                      allMessages.map((msg) => {
                         const isAgent = !msg.incoming;
                         return (
-                          <div key={msg.id} className={`flex ${isAgent ? "justify-end" : "justify-start"}`}>
-                            <div className={`max-w-[70%] rounded-lg p-4 ${
-                              isAgent ? "bg-blue-600 text-white" : "bg-white border border-slate-200 text-slate-900"
-                            }`}>
-                              <div className="flex items-center gap-2 mb-2">
-                                {isAgent ? (
-                                  <><Bot className="size-4" /><span className="text-xs font-medium">Agente IA</span></>
-                                ) : (
-                                  <><User className="size-4" /><span className="text-xs font-medium text-slate-600">Cliente</span></>
-                                )}
+                          <div
+                            key={msg.id}
+                            className={`flex items-end gap-2 ${isAgent ? "justify-end" : "justify-start"}`}
+                          >
+                            {!isAgent && (
+                              <div className="bg-slate-200 size-6 rounded-full flex items-center justify-center shrink-0 mb-0.5">
+                                <User className="size-3.5 text-slate-500" />
                               </div>
-                              <p className="text-sm whitespace-pre-wrap mb-2">{msg.message_text}</p>
-                              <div className="flex items-center justify-end gap-2">
-                                <span className={`text-xs ${isAgent ? "text-blue-100" : "text-slate-500"}`}>
-                                  {msg.sent_at
-                                    ? new Date(msg.sent_at).toLocaleTimeString("es-BO", { hour: "2-digit", minute: "2-digit" })
-                                    : new Date(msg.created_at).toLocaleTimeString("es-BO", { hour: "2-digit", minute: "2-digit" })
-                                  }
+                            )}
+                            <div className={`max-w-[70%] rounded-2xl px-4 py-2.5 shadow-sm ${
+                              isAgent
+                                ? "bg-blue-600 text-white rounded-br-sm"
+                                : "bg-white text-slate-900 rounded-bl-sm border border-slate-100"
+                            }`}>
+                              {!isAgent && (
+                                <p className="text-[10px] font-semibold mb-1 text-slate-400 uppercase tracking-wide">Cliente</p>
+                              )}
+                              {isAgent && (
+                                <p className="text-[10px] font-semibold mb-1 text-blue-200 uppercase tracking-wide flex items-center gap-1">
+                                  <Bot className="size-3" /> Agente
+                                </p>
+                              )}
+                              <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.message_text}</p>
+                              <div className={`flex items-center justify-end gap-1.5 mt-1.5 ${isAgent ? "text-blue-200" : "text-slate-400"}`}>
+                                <span className="text-[10px]">
+                                  {new Date(msg.sent_at ?? msg.created_at).toLocaleTimeString("es", {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}
                                 </span>
                                 {isAgent && (
-                                  <CheckCheck className={`size-4 ${msg.read ? "text-blue-200" : "text-blue-300"}`} />
+                                  <CheckCheck className={`size-3.5 ${msg.read ? "text-blue-200" : "text-blue-400"}`} />
                                 )}
                               </div>
                             </div>
+                            {isAgent && (
+                              <div className="bg-blue-100 size-6 rounded-full flex items-center justify-center shrink-0 mb-0.5">
+                                <Bot className="size-3.5 text-blue-600" />
+                              </div>
+                            )}
                           </div>
                         );
-                      })}
-                    </div>
+                      })
+                    )}
+                    {/* Auto-scroll anchor */}
+                    <div ref={messagesEndRef} />
                   </div>
 
-                  {/* Footer */}
-                  <div className="border-t border-slate-200 p-4 bg-slate-50">
-                    <div className="flex items-center gap-2 text-sm text-slate-600">
-                      <Clock className="size-4 text-slate-400" />
-                      <span>
-                        {selectedThread.last_interaction
+                  {/* Message input */}
+                  <div className="bg-white border-t border-slate-100 p-3 shrink-0">
+                    {!activePhone ? (
+                      <p className="text-xs text-amber-600 text-center py-2">
+                        Este contacto no tiene número de WhatsApp registrado.
+                      </p>
+                    ) : (
+                      <div className="flex items-end gap-2">
+                        <Textarea
+                          id="bandeja-message-input"
+                          placeholder="Escribe un mensaje... (Enter para enviar, Shift+Enter para nueva línea)"
+                          value={message}
+                          onChange={(e) => setMessage(e.target.value)}
+                          onKeyDown={handleKeyDown}
+                          rows={1}
+                          className="flex-1 resize-none max-h-32 text-sm border-slate-200 bg-slate-50 focus-visible:ring-blue-500 rounded-xl overflow-y-auto"
+                          style={{ minHeight: "42px", height: "auto" }}
+                          disabled={sendMutation.isPending}
+                        />
+                        <Button
+                          id="bandeja-send-btn"
+                          size="icon"
+                          className={`shrink-0 size-[42px] rounded-xl transition-all ${
+                            message.trim() && !sendMutation.isPending
+                              ? "bg-blue-600 hover:bg-blue-700 shadow-md hover:shadow-blue-200"
+                              : "bg-slate-200 cursor-not-allowed"
+                          }`}
+                          onClick={handleSend}
+                          disabled={!message.trim() || sendMutation.isPending}
+                          aria-label="Enviar mensaje"
+                        >
+                          {sendMutation.isPending ? (
+                            <Loader2 className="size-4 animate-spin text-slate-500" />
+                          ) : (
+                            <Send className={`size-4 ${message.trim() ? "text-white" : "text-slate-400"}`} />
+                          )}
+                        </Button>
+                      </div>
+                    )}
+                    {/* Hint */}
+                    <div className="flex items-center gap-1.5 mt-1.5 px-1">
+                      <Clock className="size-3 text-slate-300" />
+                      <p className="text-[10px] text-slate-400">
+                        {selectedThread?.last_interaction
                           ? `Última interacción: ${formatRelativeTime(selectedThread.last_interaction)}`
-                          : "Sin interacciones"
+                          : "Primera vez que contactas a este número"
                         }
-                        {" "}• {allMessages.length} mensajes en el historial
-                      </span>
+                        {" · "}
+                        {allMessages.length} mensaje{allMessages.length !== 1 ? "s" : ""}
+                      </p>
                     </div>
                   </div>
                 </>
               )}
             </div>
+
           </div>
         </CardContent>
       </Card>

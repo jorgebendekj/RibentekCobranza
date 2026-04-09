@@ -1,5 +1,5 @@
 import { supabase } from '../../lib/supabase';
-import type { Database, WhatsappConfiguration, WhatsappTemplate } from '../data/supabase.types';
+import type { Database, WhatsappConfiguration, WhatsappTemplate, Contact } from '../data/supabase.types';
 
 type TemplateInsert = Database['public']['Tables']['whatsapp_templates']['Insert'];
 
@@ -129,5 +129,43 @@ export const whatsappService = {
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Error sincronizando plantillas');
     return json as { success: boolean; synced: number; total_remote: number; total_local: number };
+  },
+
+  /** Send a free-text message to a contact via Meta proxy */
+  async sendMessage(
+    tenantId: string,
+    payload: { phone_number: string; message_text: string; thread_id?: string }
+  ) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = getAdminBaseUrl();
+
+    const res = await fetch(`${adminUrl}/api/meta/messages/send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Error enviando mensaje');
+    return json as { success: boolean; message?: Record<string, unknown> };
+  },
+
+  /** Search contacts by name or phone within a tenant */
+  async searchContacts(tenantId: string, query: string): Promise<Contact[]> {
+    const q = `%${query}%`;
+    const { data, error } = await supabase
+      .from('contacts')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .or(`name.ilike.${q},phone_number.ilike.${q}`)
+      .limit(10);
+    if (error) throw error;
+    return data ?? [];
   },
 };

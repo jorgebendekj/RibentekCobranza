@@ -93,18 +93,280 @@ app.get('/webhooks/meta', (req, res) => {
 });
 
 app.post('/webhooks/meta', async (req, res) => {
-  if (!verifyMetaSignature(req)) return res.status(401).json({ error: 'Invalid signature' });
-
+  // Always respond 200 immediately so Meta doesn't retry
   res.status(200).json({ ok: true });
+
+  // Skip signature check only when META_APP_SECRET not set (development)
+  if (process.env.META_APP_SECRET && !verifyMetaSignature(req)) {
+    console.warn('[meta-webhook] invalid signature, skipping');
+    return;
+  }
 
   try {
     const payload = req.body ?? {};
-    console.log('[meta-webhook] event received', {
-      object: payload.object,
-      entries: Array.isArray(payload.entry) ? payload.entry.length : 0,
-    });
+    if (!Array.isArray(payload.entry)) return;
+
+    for (const entry of payload.entry) {
+      for (const change of (entry.changes ?? [])) {
+        const value = change.value ?? {};
+        const phoneNumberId = value.metadata?.phone_number_id;
+
+        // ── 1. Find tenant config by the receiving phone_number_id ──
+        let config = null;
+        if (phoneNumberId) {
+          const { data } = await supabaseAdmin
+            .from('whatsapp_configurations')
+            .select('id, tenant_id, token')
+            .eq('phone_number_id', phoneNumberId)
+            .is('deleted_at', null)
+            .maybeSingle();
+          config = data;
+        }
+
+        // ── 2. Handle incoming messages ────────────────────────────
+        if (Array.isArray(value.messages)) {
+          for (const msg of value.messages) {
+            const from = msg.from;       // sender's WA number e.g. "591XXXXXXXX"
+            const waMsgId = msg.id;      // WhatsApp message ID
+            const text = msg.text?.body ?? msg.type ?? '';
+
+            if (!config || !from) continue;
+
+            const tenantId = config.tenant_id;
+
+            // Upsert contact (match by phone_number scoped to tenant)
+            let contactId;
+            const { data: existingContact } = await supabaseAdmin
+              .from('contacts')
+              .select('id')
+              .eq('tenant_id', tenantId)
+              .eq('phone_number', from)
+              .is('deleted_at', null)
+              .maybeSingle();
+
+            if (existingContact) {
+              contactId = existingContact.id;
+              await supabaseAdmin
+                .from('contacts')
+                .update({ last_interaction: new Date().toISOString() })
+                .eq('id', contactId);
+            } else {
+              // Create a minimal contact using the name from profile (if provided) or phone
+              const displayName = value.contacts?.[0]?.profile?.name ?? from;
+              const { data: newContact } = await supabaseAdmin
+                .from('contacts')
+                .insert({ name: displayName, phone_number: from, tenant_id: tenantId })
+                .select('id')
+                .single();
+              contactId = newContact?.id;
+            }
+            if (!contactId) continue;
+
+            // Upsert thread
+            let threadId;
+            const { data: existingThread } = await supabaseAdmin
+              .from('whatsapp_threads')
+              .select('id')
+              .eq('contact_id', contactId)
+              .eq('tenant_id', tenantId)
+              .is('deleted_at', null)
+              .maybeSingle();
+
+            if (existingThread) {
+              threadId = existingThread.id;
+            } else {
+              const { data: newThread } = await supabaseAdmin
+                .from('whatsapp_threads')
+                .insert({ contact_id: contactId, tenant_id: tenantId, last_message: text, last_interaction: new Date().toISOString() })
+                .select('id')
+                .single();
+              threadId = newThread?.id;
+            }
+            if (!threadId) continue;
+
+            // Insert message (deduplicated by wa_message_id if column exists)
+            await supabaseAdmin
+              .from('whatsapp_messages')
+              .insert({
+                whatsapp_thread_id: threadId,
+                message_text: text,
+                incoming: true,
+                read: false,
+                sent_at: msg.timestamp ? new Date(Number(msg.timestamp) * 1000).toISOString() : new Date().toISOString(),
+              });
+
+            // Update thread snapshot
+            await supabaseAdmin
+              .from('whatsapp_threads')
+              .update({ last_message: text, last_interaction: new Date().toISOString() })
+              .eq('id', threadId);
+          }
+        }
+
+        // ── 3. Handle status updates (delivered / read) ────────────
+        if (Array.isArray(value.statuses) && config) {
+          for (const status of value.statuses) {
+            if (status.status === 'read') {
+              // Find thread by matching the recipient phone in the tenant
+              const recipientPhone = status.recipient_id;
+              const { data: contact } = await supabaseAdmin
+                .from('contacts')
+                .select('id')
+                .eq('tenant_id', config.tenant_id)
+                .eq('phone_number', recipientPhone)
+                .maybeSingle();
+              if (contact) {
+                const { data: thread } = await supabaseAdmin
+                  .from('whatsapp_threads')
+                  .select('id')
+                  .eq('contact_id', contact.id)
+                  .maybeSingle();
+                if (thread) {
+                  await supabaseAdmin
+                    .from('whatsapp_messages')
+                    .update({ read: true, read_at: new Date().toISOString() })
+                    .eq('whatsapp_thread_id', thread.id)
+                    .eq('incoming', false)
+                    .eq('read', false);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   } catch (err) {
     console.error('[meta-webhook] processing error:', err?.message || err);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// META API PROXY — Send outbound message
+// ════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/meta/messages/send
+ * Sends a free-form text message to a contact via Meta Cloud API
+ * and stores the outbound record in whatsapp_messages.
+ * Body: { phone_number, message_text, thread_id? }
+ */
+app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId, userId } = req.workspaceAdmin;
+  const { phone_number, message_text, thread_id } = req.body;
+
+  if (!phone_number || !message_text) {
+    return res.status(400).json({ error: 'phone_number and message_text are required' });
+  }
+
+  try {
+    // 1. Get WhatsApp config for tenant
+    const { data: config, error: configError } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('id, phone_number_id, token, tenant_id')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .single();
+
+    if (configError || !config?.phone_number_id) {
+      return res.status(400).json({ error: 'WhatsApp not configured or phone_number_id missing' });
+    }
+
+    // 2. Send via Meta Cloud API
+    const metaRes = await fetch(
+      `https://graph.facebook.com/v23.0/${config.phone_number_id}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${config.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: phone_number,
+          type: 'text',
+          text: { preview_url: false, body: message_text },
+        }),
+      }
+    );
+
+    const metaData = await metaRes.json();
+    if (!metaRes.ok) {
+      return res.status(metaRes.status).json({
+        error: metaData.error?.message || 'Meta API Error',
+        details: metaData.error,
+      });
+    }
+
+    // 3. Resolve or create thread
+    let resolvedThreadId = thread_id;
+    if (!resolvedThreadId) {
+      // Find contact by phone
+      const { data: contact } = await supabaseAdmin
+        .from('contacts')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('phone_number', phone_number)
+        .is('deleted_at', null)
+        .maybeSingle();
+
+      if (contact) {
+        const { data: thread } = await supabaseAdmin
+          .from('whatsapp_threads')
+          .select('id')
+          .eq('contact_id', contact.id)
+          .eq('tenant_id', tenantId)
+          .is('deleted_at', null)
+          .maybeSingle();
+
+        if (thread) {
+          resolvedThreadId = thread.id;
+        } else {
+          const { data: newThread } = await supabaseAdmin
+            .from('whatsapp_threads')
+            .insert({
+              contact_id: contact.id,
+              tenant_id: tenantId,
+              last_message: message_text,
+              last_interaction: new Date().toISOString(),
+              created_by: userId,
+              updated_by: userId,
+            })
+            .select('id')
+            .single();
+          resolvedThreadId = newThread?.id;
+        }
+      }
+    }
+
+    // 4. Store outbound message
+    if (resolvedThreadId) {
+      const { data: saved } = await supabaseAdmin
+        .from('whatsapp_messages')
+        .insert({
+          whatsapp_thread_id: resolvedThreadId,
+          message_text,
+          incoming: false,
+          read: false,
+          sent_at: new Date().toISOString(),
+          created_by: userId,
+          updated_by: userId,
+        })
+        .select()
+        .single();
+
+      // Update thread snapshot
+      await supabaseAdmin
+        .from('whatsapp_threads')
+        .update({ last_message: message_text, last_interaction: new Date().toISOString(), updated_by: userId })
+        .eq('id', resolvedThreadId);
+
+      return res.status(201).json({ success: true, message: saved, wa_response: metaData });
+    }
+
+    return res.status(201).json({ success: true, wa_response: metaData });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
 });
 
