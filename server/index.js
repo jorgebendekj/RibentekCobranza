@@ -1,8 +1,8 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const crypto = require('crypto');
-const { createClient } = require('@supabase/supabase-js');
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
 
 const app = express();
 app.use(express.json({
@@ -816,11 +816,11 @@ app.get('/api/meta/templates/sync', requireWorkspaceAdmin, async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
-if (require.main === module) {
+if (!process.env.VERCEL) {
   app.listen(PORT, () => {
     console.log(`🚀 Admin server running on http://localhost:${PORT}`);
     console.log(`   Supabase: ${process.env.SUPABASE_URL}`);
   });
 }
 
-module.exports = app;
+export default app;
