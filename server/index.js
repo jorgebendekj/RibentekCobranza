@@ -1297,48 +1297,67 @@ app.get('/api/meta/templates/sync', requireWorkspaceAdmin, async (req, res) => {
 
     const metaTemplates = metaData.data || [];
     let syncedCount = 0;
+    let importedCount = 0;
 
-    // 2) Get local templates belonging to this tenant config.
-    // Default behavior syncs only PENDING templates as requested in implementation task.
-    let localQuery = supabaseAdmin
+    // 2) Read all local templates for this tenant config so we can both update and import.
+    const { data: localTemplates = [] } = await supabaseAdmin
       .from('whatsapp_templates')
       .select('id, meta_template_id, template_name, meta_status')
-      .eq('whatsapp_configuration_id', config.id);
+      .eq('whatsapp_configuration_id', config.id)
+      .is('deleted_at', null);
 
-    if (mode !== 'all') {
-      localQuery = localQuery.eq('meta_status', 'PENDING');
+    const localByMetaId = new Map(localTemplates.filter((t) => t.meta_template_id).map((t) => [t.meta_template_id, t]));
+    const localByName = new Map(localTemplates.map((t) => [t.template_name, t]));
+
+    // 3) Update existing local templates from Meta statuses/details.
+    for (const local of localTemplates) {
+      // Keep old "pending-only" behavior for status update unless mode=all.
+      if (mode !== 'all' && local.meta_status !== 'PENDING') continue;
+      const match = metaTemplates.find((t) => t.id === local.meta_template_id || t.name === local.template_name);
+      if (!match) continue;
+
+      await supabaseAdmin
+        .from('whatsapp_templates')
+        .update({
+          meta_status: String(match.status || 'PENDING').toUpperCase(),
+          meta_template_id: match.id,
+          language: match.language || undefined,
+          category: match.category || undefined,
+          components: match.components || undefined,
+        })
+        .eq('id', local.id);
+      syncedCount++;
     }
 
-    const { data: localTemplates } = await localQuery;
+    // 4) Import templates created directly in Meta but missing locally.
+    for (const remote of metaTemplates) {
+      const exists = localByMetaId.has(remote.id) || localByName.has(remote.name);
+      if (exists) continue;
 
-    if (localTemplates) {
-      for (const local of localTemplates) {
-        // Try to match by meta_template_id first, then by name
-        const match = metaTemplates.find(
-          (t) => t.id === local.meta_template_id || t.name === local.template_name
-        );
-        if (match) {
-          await supabaseAdmin
-            .from('whatsapp_templates')
-            .update({
-              meta_status: match.status,
-              meta_template_id: match.id,
-              language: match.language || undefined,
-              category: match.category || undefined,
-              components: match.components || undefined,
-            })
-            .eq('id', local.id);
-          syncedCount++;
-        }
-      }
+      const { error: insertError } = await supabaseAdmin
+        .from('whatsapp_templates')
+        .insert({
+          whatsapp_configuration_id: config.id,
+          template_name: String(remote.name || '').trim(),
+          format_type: 'positional',
+          args: [],
+          meta_status: String(remote.status || 'PENDING').toUpperCase(),
+          meta_template_id: remote.id || null,
+          language: remote.language || 'es_LA',
+          category: remote.category || 'UTILITY',
+          components: remote.components || [],
+        });
+
+      if (!insertError) importedCount++;
     }
 
     return res.json({
       success: true,
       mode: mode === 'all' ? 'all' : 'pending',
       synced: syncedCount,
+      imported: importedCount,
       total_remote: metaTemplates.length,
-      total_local: localTemplates?.length ?? 0,
+      total_local: localTemplates.length + importedCount,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });

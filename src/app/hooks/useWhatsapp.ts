@@ -36,7 +36,11 @@ export function useTemplates() {
   const { tenantId } = useAuth();
   return useQuery({
     queryKey: [WA_TEMPLATES_KEY, tenantId],
-    queryFn: () => whatsappService.getTemplates(tenantId!),
+    queryFn: async () => {
+      // Keep Meta and local DB in sync before showing the template list.
+      await whatsappService.syncMetaTemplates(tenantId!).catch(() => null);
+      return whatsappService.getTemplates(tenantId!);
+    },
     enabled: !!tenantId,
   });
 }
