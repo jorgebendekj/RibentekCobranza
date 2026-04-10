@@ -2,11 +2,7 @@ import { Bell } from "lucide-react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
 import { Button } from "../ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from "../ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import NotificationDropdown from "./NotificationDropdown";
 import {
   useMarkAllNotificationsRead,
@@ -31,8 +27,8 @@ export default function NotificationBell() {
   };
 
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
+    <Popover>
+      <PopoverTrigger asChild>
         <Button variant="outline" size="icon" className="relative rounded-full">
           <Bell className="size-4" />
           {unread > 0 ? (
@@ -41,8 +37,8 @@ export default function NotificationBell() {
             </span>
           ) : null}
         </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="p-0">
+      </PopoverTrigger>
+      <PopoverContent align="end" className="p-0 w-auto">
         <NotificationDropdown
           items={items}
           isLoading={isLoading}
@@ -53,7 +49,7 @@ export default function NotificationBell() {
           }
           onNotificationClick={onClickNotification}
         />
-      </DropdownMenuContent>
-    </DropdownMenu>
+      </PopoverContent>
+    </Popover>
   );
 }
