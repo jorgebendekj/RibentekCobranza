@@ -1,7 +1,7 @@
+import React from "react";
 import { Bell } from "lucide-react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
-import { Button } from "../ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import NotificationDropdown from "./NotificationDropdown";
 import {
@@ -28,15 +28,16 @@ export default function NotificationBell() {
 
   return (
     <Popover>
-      <PopoverTrigger asChild>
-        <Button variant="outline" size="icon" className="relative rounded-full">
-          <Bell className="size-4" />
-          {unread > 0 ? (
-            <span className="absolute -right-1 -top-1 min-w-5 h-5 px-1 rounded-full bg-red-600 text-white text-[10px] font-semibold flex items-center justify-center">
-              {unread > 99 ? "99+" : unread}
-            </span>
-          ) : null}
-        </Button>
+      <PopoverTrigger
+        className="relative inline-flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+        aria-label="Abrir notificaciones"
+      >
+        <Bell className="size-4" />
+        {unread > 0 ? (
+          <span className="absolute -right-1 -top-1 min-w-5 h-5 px-1 rounded-full bg-red-600 text-white text-[10px] font-semibold flex items-center justify-center">
+            {unread > 99 ? "99+" : unread}
+          </span>
+        ) : null}
       </PopoverTrigger>
       <PopoverContent align="end" className="p-0 w-auto">
         <NotificationDropdown
