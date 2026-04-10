@@ -52,6 +52,8 @@ export interface MassSendFilters {
   min_amount_due?: number | null;
   max_amount_due?: number | null;
   debt_status?: string | null;
+  included_contact_ids?: string[];
+  excluded_contact_ids?: string[];
 }
 
 export interface MassSend {

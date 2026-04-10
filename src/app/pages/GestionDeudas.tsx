@@ -75,7 +75,7 @@ export function GestionDeudas() {
   const { data: summary, isLoading: summaryLoading } = useDebtsSummary();
   const { data: templates = [] } = useTemplates();
   const { data: contacts = [] } = useContacts();
-  const { data: massSends = [] } = useMassSends();
+  useMassSends();
   const previewMutation = usePreviewMassSend();
   const createMutation = useCreateMassSend();
   const runMutation = useRunMassSend();
@@ -237,7 +237,7 @@ export function GestionDeudas() {
         ...massFilters,
         included_contact_ids: includedContactIds,
         excluded_contact_ids: excludedContactIds,
-      } as unknown as Record<string, unknown>,
+      },
       mode: massSendMode,
       schedule: massSendMode === "scheduled"
         ? { cron_expression: cronExpression.trim(), timezone: "America/Bogota", enabled: true }
@@ -525,11 +525,12 @@ export function GestionDeudas() {
                 <Select value={templateId} onValueChange={setTemplateId}>
                   <SelectTrigger id="mass-template"><SelectValue placeholder="Selecciona plantilla" /></SelectTrigger>
                   <SelectContent>
-                    {templates
-                      .filter((template) => String(template.meta_status).toUpperCase() === "APPROVED")
-                      .map((template) => (
-                        <SelectItem key={template.id} value={template.id}>{template.template_name}</SelectItem>
-                      ))}
+                    {templates.map((template) => (
+                      <SelectItem key={template.id} value={template.id}>
+                        {template.template_name}
+                        {String(template.meta_status || "").toUpperCase() !== "APPROVED" ? " (no aprobada)" : ""}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

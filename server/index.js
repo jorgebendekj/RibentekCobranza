@@ -658,12 +658,18 @@ function extractTemplateName(messageText) {
 }
 
 function normalizeMassSendFilters(input = {}) {
+  const normalizeIds = (value) => {
+    if (!Array.isArray(value)) return [];
+    return Array.from(new Set(value.map((id) => String(id || '').trim()).filter(Boolean)));
+  };
   return {
     min_days_overdue: Number.isFinite(Number(input.min_days_overdue)) ? Number(input.min_days_overdue) : null,
     max_days_overdue: Number.isFinite(Number(input.max_days_overdue)) ? Number(input.max_days_overdue) : null,
     min_amount_due: Number.isFinite(Number(input.min_amount_due)) ? Number(input.min_amount_due) : null,
     max_amount_due: Number.isFinite(Number(input.max_amount_due)) ? Number(input.max_amount_due) : null,
     debt_status: input.debt_status ? String(input.debt_status) : null,
+    included_contact_ids: normalizeIds(input.included_contact_ids),
+    excluded_contact_ids: normalizeIds(input.excluded_contact_ids),
   };
 }
 
@@ -756,11 +762,41 @@ async function buildMassSendCandidates({ tenantId, filters, sampleLimit = 20 }) 
     max_days_overdue: maxOverdueByContact.get(item.contact_id) || 0,
   }));
 
+  const existingContactIds = new Set(candidates.map((item) => item.contact_id));
+  const manualIncludedIds = (normalizedFilters.included_contact_ids || []).filter((id) => !existingContactIds.has(id));
+  if (manualIncludedIds.length > 0) {
+    const { data: manualContacts = [], error: manualContactsError } = await supabaseAdmin
+      .from('contacts')
+      .select('id, name, phone_number')
+      .eq('tenant_id', tenantId)
+      .in('id', manualIncludedIds)
+      .is('deleted_at', null);
+    if (manualContactsError) throw new Error(manualContactsError.message);
+
+    for (const contact of manualContacts) {
+      const phone = String(contact.phone_number || '').trim();
+      if (!phone) continue;
+      candidates.push({
+        contact_id: contact.id,
+        phone_number: phone,
+        contact_name: contact.name || phone,
+        total_pending: 0,
+        debt_status: 'manual_include',
+        max_days_overdue: 0,
+      });
+    }
+  }
+
   if (normalizedFilters.min_days_overdue !== null) {
     candidates = candidates.filter((item) => item.max_days_overdue >= normalizedFilters.min_days_overdue);
   }
   if (normalizedFilters.max_days_overdue !== null) {
     candidates = candidates.filter((item) => item.max_days_overdue <= normalizedFilters.max_days_overdue);
+  }
+
+  if (normalizedFilters.excluded_contact_ids.length > 0) {
+    const excludedSet = new Set(normalizedFilters.excluded_contact_ids);
+    candidates = candidates.filter((item) => !excludedSet.has(item.contact_id));
   }
 
   candidates.sort((a, b) => b.total_pending - a.total_pending);
