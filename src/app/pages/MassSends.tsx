@@ -66,7 +66,7 @@ export default function MassSends() {
         : null,
     }, {
       onSuccess: () => {
-        toast.success("Env�o masivo guardado");
+        toast.success("Envios masivos guardados");
         setStep(4);
       },
       onError: (err) => toast.error((err as Error).message),
@@ -75,17 +75,17 @@ export default function MassSends() {
 
   const stepTitle = {
     1: "Paso 1: Plantilla",
-    2: "Paso 2: Segmentaci�n cobranza",
+    2: "Paso 2: Segmentacion cobranza",
     3: "Paso 3: Vista previa",
-    4: "Paso 4: Confirmaci�n y ejecuci�n",
+    4: "Paso 4: Confirmacion y ejecucion",
   }[step];
 
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-bold text-2xl text-slate-900 tracking-tight">Env�os Masivos</h1>
-          <p className="text-slate-500 text-sm mt-0.5">Orquesta env�os parametrizados por condiciones de cobranza</p>
+          <h1 className="font-bold text-2xl text-slate-900 tracking-tight">Envios Masivos</h1>
+          <p className="text-slate-500 text-sm mt-0.5">Orquesta envios parametrizados por condiciones de cobranza</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => navigate("/mensajeria/dashboard")}>Ver impacto en dashboard</Button>
@@ -115,8 +115,8 @@ export default function MassSends() {
             {step === 1 ? (
               <div className="space-y-3">
                 <div className="space-y-1">
-                  <label htmlFor="mass-send-name" className="text-xs text-slate-600">Nombre del env�o</label>
-                  <Input id="mass-send-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Mora 7 d�as - Utility" />
+                  <label htmlFor="mass-send-name" className="text-xs text-slate-600">Nombre del envio</label>
+                  <Input id="mass-send-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Mora 7 dias - Utility" />
                 </div>
                 <div className="space-y-1">
                   <label htmlFor="mass-send-template" className="text-xs text-slate-600">Plantilla aprobada</label>
@@ -153,7 +153,7 @@ export default function MassSends() {
                 </div>
                 {mode === "scheduled" ? (
                   <div className="space-y-1">
-                    <label htmlFor="mass-send-cron" className="text-xs text-slate-600">Cron expresi�n</label>
+                    <label htmlFor="mass-send-cron" className="text-xs text-slate-600">Cron expresion</label>
                     <Input id="mass-send-cron" value={cronExpression} onChange={(e) => setCronExpression(e.target.value)} placeholder="0 9 * * *" />
                   </div>
                 ) : null}
@@ -163,19 +163,19 @@ export default function MassSends() {
             {step === 2 ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <label className="text-xs text-slate-600">M�n d�as mora</label>
+                  <label className="text-xs text-slate-600">Min dias mora</label>
                   <Input value={minDaysOverdue} onChange={(e) => setMinDaysOverdue(e.target.value)} type="number" min={0} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs text-slate-600">M�x d�as mora</label>
+                  <label className="text-xs text-slate-600">Max dias mora</label>
                   <Input value={maxDaysOverdue} onChange={(e) => setMaxDaysOverdue(e.target.value)} type="number" min={0} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs text-slate-600">M�n monto pendiente</label>
+                  <label className="text-xs text-slate-600">Min monto pendiente</label>
                   <Input value={minAmountDue} onChange={(e) => setMinAmountDue(e.target.value)} type="number" min={0} />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-xs text-slate-600">M�x monto pendiente</label>
+                  <label className="text-xs text-slate-600">Max monto pendiente</label>
                   <Input value={maxAmountDue} onChange={(e) => setMaxAmountDue(e.target.value)} type="number" min={0} />
                 </div>
                 <div className="space-y-1 md:col-span-2">
@@ -212,7 +212,7 @@ export default function MassSends() {
                             <p className="text-xs text-slate-500">{item.phone_number}</p>
                           </div>
                           <div className="text-xs text-right text-slate-500">
-                            <p>Mora m�x: {item.max_days_overdue} d�as</p>
+                            <p>Mora max: {item.max_days_overdue} dias</p>
                             <p>Pendiente: {item.total_pending}</p>
                           </div>
                         </div>
@@ -220,7 +220,7 @@ export default function MassSends() {
                     </div>
                   </div>
                 ) : (
-                  <p className="text-sm text-slate-500">Ejecuta la previsualizaci�n para ver el alcance.</p>
+                  <p className="text-sm text-slate-500">Ejecuta la previsualizacion para ver el alcance.</p>
                 )}
               </div>
             ) : null}
@@ -228,10 +228,10 @@ export default function MassSends() {
             {step === 4 ? (
               <div className="space-y-3">
                 <Button onClick={handleCreate} disabled={createMutation.isPending}>
-                  {createMutation.isPending ? "Guardando..." : "Guardar env�o"}
+                  {createMutation.isPending ? "Guardando..." : "Guardar envio"}
                 </Button>
                 <p className="text-xs text-slate-500">
-                  Guarda primero el env�o. Luego ejec�talo desde el historial en modo manual.
+                  Guarda primero el envio. Luego ejecutalo desde el historial en modo manual.
                 </p>
               </div>
             ) : null}
@@ -240,11 +240,11 @@ export default function MassSends() {
 
         <Card className="border-slate-200">
           <CardHeader>
-            <CardTitle className="text-base">Resumen r�pido</CardTitle>
+            <CardTitle className="text-base">Resumen rapido</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
             <div className="flex items-center justify-between">
-              <span className="text-slate-500">Total env�os</span>
+              <span className="text-slate-500">Total envios</span>
               <span className="font-medium">{massSends.length}</span>
             </div>
             <div className="flex items-center justify-between">
@@ -261,7 +261,7 @@ export default function MassSends() {
 
       <Card className="border-slate-200">
         <CardHeader>
-          <CardTitle className="text-base">Historial de env�os</CardTitle>
+          <CardTitle className="text-base">Historial de envios</CardTitle>
         </CardHeader>
         <CardContent>
           {loadingMassSends ? (
@@ -269,7 +269,7 @@ export default function MassSends() {
               {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
             </div>
           ) : massSends.length === 0 ? (
-            <p className="text-sm text-slate-500">Todav�a no hay env�os masivos parametrizados.</p>
+            <p className="text-sm text-slate-500">Todavia no hay envios masivos parametrizados.</p>
           ) : (
             <div className="space-y-2">
               {massSends.map((item) => (
@@ -277,11 +277,11 @@ export default function MassSends() {
                   <div>
                     <p className="text-sm font-medium">{item.name}</p>
                     <p className="text-xs text-slate-500">
-                      {item.template_name} � {item.mode === "scheduled" ? "Programado" : "Manual"}
+                      {item.template_name} - {item.mode === "scheduled" ? "Programado" : "Manual"}
                     </p>
                     {item.last_run ? (
                       <p className="text-xs text-slate-500">
-                        �ltima ejecuci�n: sent={item.last_run.sent_count}, failed={item.last_run.failed_count}, skipped={item.last_run.skipped_count}
+                        Ultima ejecucion: sent={item.last_run.sent_count}, failed={item.last_run.failed_count}, skipped={item.last_run.skipped_count}
                       </p>
                     ) : null}
                   </div>
@@ -290,7 +290,7 @@ export default function MassSends() {
                     <Button
                       size="sm"
                       onClick={() => runMutation.mutate(item.id, {
-                        onSuccess: () => toast.success("Ejecuci�n completada"),
+                        onSuccess: () => toast.success("Ejecucion completada"),
                         onError: (err) => toast.error((err as Error).message),
                       })}
                       disabled={runMutation.isPending}
