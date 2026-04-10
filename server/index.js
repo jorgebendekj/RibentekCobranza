@@ -762,6 +762,14 @@ async function buildMassSendCandidates({ tenantId, filters, sampleLimit = 20 }) 
     max_days_overdue: maxOverdueByContact.get(item.contact_id) || 0,
   }));
 
+  if (normalizedFilters.min_days_overdue !== null) {
+    candidates = candidates.filter((item) => item.max_days_overdue >= normalizedFilters.min_days_overdue);
+  }
+  if (normalizedFilters.max_days_overdue !== null) {
+    candidates = candidates.filter((item) => item.max_days_overdue <= normalizedFilters.max_days_overdue);
+  }
+
+  // Manual include must override debt filters; add contacts after all filter gates.
   const existingContactIds = new Set(candidates.map((item) => item.contact_id));
   const manualIncludedIds = (normalizedFilters.included_contact_ids || []).filter((id) => !existingContactIds.has(id));
   if (manualIncludedIds.length > 0) {
@@ -785,13 +793,6 @@ async function buildMassSendCandidates({ tenantId, filters, sampleLimit = 20 }) 
         max_days_overdue: 0,
       });
     }
-  }
-
-  if (normalizedFilters.min_days_overdue !== null) {
-    candidates = candidates.filter((item) => item.max_days_overdue >= normalizedFilters.min_days_overdue);
-  }
-  if (normalizedFilters.max_days_overdue !== null) {
-    candidates = candidates.filter((item) => item.max_days_overdue <= normalizedFilters.max_days_overdue);
   }
 
   if (normalizedFilters.excluded_contact_ids.length > 0) {
@@ -1415,6 +1416,10 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
         sent: sentCount,
         failed: failedCount,
         skipped: skippedCount,
+      },
+      audience_debug: {
+        filters_applied: massSend.filters || {},
+        recipient_count: recipients.length,
       },
     });
   } catch (err) {
