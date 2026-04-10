@@ -481,12 +481,12 @@ export function Bandeja() {
       </div>
 
       {/* Main chat container */}
-      <Card className="h-[calc(100vh-210px)] overflow-hidden border-slate-200 shadow-sm">
+      <Card className="h-[calc(100vh-170px)] overflow-hidden border-slate-200 shadow-sm">
         <CardContent className="p-0 h-full">
           <div className="flex h-full">
 
             {/* ── LEFT SIDEBAR ─────────────────────────────────── */}
-            <div className="w-80 shrink-0 border-r border-slate-100 flex flex-col bg-white">
+            <div className="w-72 lg:w-80 shrink-0 border-r border-slate-100 flex flex-col bg-white">
 
               {/* Search bar */}
               <div className="p-3 border-b border-slate-100">
@@ -670,7 +670,7 @@ export function Bandeja() {
                   </div>
 
                   {/* Messages area */}
-                  <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+                  <div className="flex-1 overflow-y-auto px-6 py-5 space-y-3.5">
                     {messagesLoading ? (
                       <div className="space-y-3">
                         {Array.from({ length: 4 }).map((_, i) => (
@@ -697,7 +697,7 @@ export function Bandeja() {
                                 <User className="size-3.5 text-slate-500" />
                               </div>
                             )}
-                            <div className={`max-w-[70%] rounded-2xl px-4 py-2.5 shadow-sm ${
+                            <div className={`max-w-[80%] xl:max-w-[75%] rounded-2xl px-4 py-2.5 shadow-sm ${
                               isAgent
                                 ? "bg-blue-600 text-white rounded-br-sm"
                                 : "bg-white text-slate-900 rounded-bl-sm border border-slate-100"

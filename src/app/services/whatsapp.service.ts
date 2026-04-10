@@ -391,6 +391,7 @@ export const whatsappService = {
       success: boolean;
       run_id: string;
       summary: { total_recipients: number; sent: number; failed: number; skipped: number };
+      failed_samples?: Array<{ phone_number: string; error_message: string }>;
     };
   },
 

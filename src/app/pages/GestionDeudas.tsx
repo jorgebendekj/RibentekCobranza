@@ -249,6 +249,10 @@ export function GestionDeudas() {
           runMutation.mutate(mass_send.id, {
             onSuccess: (runResult) => {
               toast.success(`Envío ejecutado. Sent: ${runResult.summary.sent}, failed: ${runResult.summary.failed}, skipped: ${runResult.summary.skipped}`);
+              if (runResult.summary.failed > 0 && runResult.failed_samples?.length) {
+                const firstFailed = runResult.failed_samples[0];
+                toast.error(`Motivo de fallo (${firstFailed.phone_number}): ${firstFailed.error_message}`);
+              }
               handleCloseModal();
             },
             onError: (err) => toast.error((err as Error).message),
