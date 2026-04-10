@@ -399,13 +399,13 @@ export function Bandeja() {
     return `${days}d`;
   };
 
-  const getEstado = (t: ThreadWithContact): "activo" | "resuelto" | "pendiente" => {
+  function getEstado(t: ThreadWithContact): "activo" | "resuelto" | "pendiente" {
     if (!t.last_interaction) return "pendiente";
     const hrs = (Date.now() - new Date(t.last_interaction).getTime()) / 3_600_000;
     if (hrs < 1) return "activo";
     if (hrs < 48) return "pendiente";
     return "resuelto";
-  };
+  }
 
   const estadoBadge = (estado: string) => {
     const cfg: Record<string, { className: string; label: string }> = {

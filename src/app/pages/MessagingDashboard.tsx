@@ -45,6 +45,31 @@ function KpiCard({ title, value, hint }: { title: string; value: string | number
   );
 }
 
+function percentageDelta(current: number, previous: number) {
+  if (previous === 0) return current === 0 ? 0 : 100;
+  return Number((((current - previous) / previous) * 100).toFixed(2));
+}
+
+function deltaHint(current: number, previous: number) {
+  const delta = percentageDelta(current, previous);
+  if (delta === 0) return "Sin cambios vs periodo anterior";
+  return `${delta > 0 ? "+" : ""}${delta}% vs periodo anterior`;
+}
+
+function shiftDate(dateValue: string, days: number) {
+  const date = new Date(`${dateValue}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return formatDateValue(date);
+}
+
+function csvEscape(value: string) {
+  const v = String(value ?? "");
+  if (v.includes('"') || v.includes(",") || v.includes("\n")) {
+    return `"${v.replace(/"/g, '""')}"`;
+  }
+  return v;
+}
+
 export default function MessagingDashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -70,6 +95,21 @@ export default function MessagingDashboard() {
 
   const { data, isLoading, isFetching, error } = useMessagingMetrics(filters);
 
+  const previousFilters = useMemo(() => {
+    const currentFrom = new Date(`${fromValue}T00:00:00.000Z`);
+    const currentTo = new Date(`${toValue}T00:00:00.000Z`);
+    const dayDiff = Math.max(1, Math.round((currentTo.getTime() - currentFrom.getTime()) / 86_400_000) + 1);
+    const previousTo = shiftDate(fromValue, -1);
+    const previousFrom = shiftDate(previousTo, -(dayDiff - 1));
+    return {
+      ...filters,
+      from: withDayTime(previousFrom, false),
+      to: withDayTime(previousTo, true),
+    };
+  }, [filters, fromValue, toValue]);
+
+  const { data: previousData, isLoading: isPreviousLoading } = useMessagingMetrics(previousFilters);
+
   const updateFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
     if (!value || value === "all") next.delete(key);
@@ -78,6 +118,32 @@ export default function MessagingDashboard() {
   };
 
   const detailRows = data?.detail || [];
+
+  const exportCsv = () => {
+    if (!detailRows.length) return;
+    const headers = ["fecha", "contacto", "telefono", "direccion", "tipo", "template", "preview", "estado_conversacion", "ventana_abierta"];
+    const rows = detailRows.map((row) => ([
+      new Date(row.created_at).toISOString(),
+      row.contact_name,
+      row.phone_number || "",
+      row.direction,
+      row.message_type,
+      row.template_name || "",
+      row.preview || "",
+      row.conversation_state,
+      row.window_open ? "si" : "no",
+    ]));
+    const csv = [headers, ...rows].map((line) => line.map((cell) => csvEscape(String(cell))).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `mensajeria_detalle_${fromValue}_a_${toValue}.csv`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="space-y-5">
@@ -154,12 +220,36 @@ export default function MessagingDashboard() {
           Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-28 w-full" />)
         ) : (
           <>
-            <KpiCard title="Mensajes enviados" value={data?.kpis.sent_messages ?? 0} />
-            <KpiCard title="Mensajes respondidos" value={data?.kpis.responded_messages ?? 0} />
-            <KpiCard title="Tasa de respuesta" value={`${data?.kpis.response_rate ?? 0}%`} />
-            <KpiCard title="Plantillas enviadas" value={data?.kpis.templates_sent ?? 0} />
-            <KpiCard title="Conversaciones activas" value={data?.kpis.active_conversations ?? 0} />
-            <KpiCard title="Ventana cerrada" value={data?.kpis.closed_window_conversations ?? 0} />
+            <KpiCard
+              title="Mensajes enviados"
+              value={data?.kpis.sent_messages ?? 0}
+              hint={isPreviousLoading ? "Comparando..." : deltaHint(data?.kpis.sent_messages ?? 0, previousData?.kpis.sent_messages ?? 0)}
+            />
+            <KpiCard
+              title="Mensajes respondidos"
+              value={data?.kpis.responded_messages ?? 0}
+              hint={isPreviousLoading ? "Comparando..." : deltaHint(data?.kpis.responded_messages ?? 0, previousData?.kpis.responded_messages ?? 0)}
+            />
+            <KpiCard
+              title="Tasa de respuesta"
+              value={`${data?.kpis.response_rate ?? 0}%`}
+              hint={isPreviousLoading ? "Comparando..." : deltaHint(data?.kpis.response_rate ?? 0, previousData?.kpis.response_rate ?? 0)}
+            />
+            <KpiCard
+              title="Plantillas enviadas"
+              value={data?.kpis.templates_sent ?? 0}
+              hint={isPreviousLoading ? "Comparando..." : deltaHint(data?.kpis.templates_sent ?? 0, previousData?.kpis.templates_sent ?? 0)}
+            />
+            <KpiCard
+              title="Conversaciones activas"
+              value={data?.kpis.active_conversations ?? 0}
+              hint={isPreviousLoading ? "Comparando..." : deltaHint(data?.kpis.active_conversations ?? 0, previousData?.kpis.active_conversations ?? 0)}
+            />
+            <KpiCard
+              title="Ventana cerrada"
+              value={data?.kpis.closed_window_conversations ?? 0}
+              hint={isPreviousLoading ? "Comparando..." : deltaHint(data?.kpis.closed_window_conversations ?? 0, previousData?.kpis.closed_window_conversations ?? 0)}
+            />
           </>
         )}
       </div>
@@ -266,7 +356,12 @@ export default function MessagingDashboard() {
 
       <Card className="border-slate-200">
         <CardHeader>
-          <CardTitle className="text-base">Detalle reciente de mensajes</CardTitle>
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="text-base">Detalle reciente de mensajes</CardTitle>
+            <Button variant="outline" size="sm" onClick={exportCsv} disabled={!detailRows.length || isLoading}>
+              Exportar CSV
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {isLoading ? (
