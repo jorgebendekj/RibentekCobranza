@@ -1,8 +1,8 @@
 import { useState, useMemo } from "react";
+import { useNavigate } from "react-router";
 import {
   Search, Filter, Download, ChevronDown, ChevronUp, Calendar, FileText, Phone,
-  User, DollarSign, ArrowUpDown, Users, CreditCard, Settings, Upload, Clock,
-  MessageSquare, Plus, Trash2,
+  User, DollarSign, Users, Settings,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -15,21 +15,20 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "../components/ui/dialog";
 import { Label } from "../components/ui/label";
-import { Textarea } from "../components/ui/textarea";
-import { RadioGroup, RadioGroupItem } from "../components/ui/radio-group";
+import { Progress } from "../components/ui/progress";
 import { Skeleton } from "../components/ui/skeleton";
 import { ContactSelectorModal } from "../components/ContactSelectorModal";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
 import { useDebtDetails, useDebtsSummary } from "../hooks/useDebts";
-import { useTemplates } from "../hooks/useWhatsapp";
+import { useCreateMassSend, useMassSends, usePreviewMassSend, useRunMassSend, useTemplates } from "../hooks/useWhatsapp";
 import { useContacts } from "../hooks/useContacts";
 import type { DebtStatus } from "../data/supabase.types";
 import { DEBT_STATUS_LABELS } from "../data/supabase.types";
+import { Checkbox } from "../components/ui/checkbox";
 
 type VistaMode = "individual" | "agrupada";
-type SendType = "automatico" | "manual";
-type ReminderRule = { id: string; days: string; templateId: string };
+type MassStep = 1 | 2 | 3 | 4 | 5;
 
 const STATUS_OPTIONS: Array<{ value: DebtStatus | "all"; label: string }> = [
   { value: "all", label: "Todos los estados" },
@@ -40,24 +39,32 @@ const STATUS_OPTIONS: Array<{ value: DebtStatus | "all"; label: string }> = [
 ];
 
 export function GestionDeudas() {
+  const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<DebtStatus | "all">("all");
   const [sortBy, setSortBy] = useState<string>("expiration_date_desc");
   const [vistaMode, setVistaMode] = useState<VistaMode>("individual");
   const [expandedClients, setExpandedClients] = useState<Set<string>>(new Set());
 
-  // Modal
+  // Wizard de envíos masivos
   const [showCobranzasModal, setShowCobranzasModal] = useState(false);
-  const [currentStep, setCurrentStep] = useState(1);
-  const [debtPreview, setDebtPreview] = useState<any[]>([]);
-  const [sendType, setSendType] = useState<SendType>("automatico");
-  const [reminderMessage, setReminderMessage] = useState("");
-  const [reminderTarget, setReminderTarget] = useState<"todos" | "lista">("todos");
-  const [reminderRules, setReminderRules] = useState<ReminderRule[]>([
-    { id: "1", days: "-3", templateId: "" },
-  ]);
-  const [showContactSelector, setShowContactSelector] = useState(false);
-  const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
+  const [currentStep, setCurrentStep] = useState<MassStep>(1);
+  const [massSendName, setMassSendName] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [language, setLanguage] = useState("es_LA");
+  const [massSendMode, setMassSendMode] = useState<"manual" | "scheduled">("manual");
+  const [cronExpression, setCronExpression] = useState("0 9 * * *");
+  const [minDaysOverdue, setMinDaysOverdue] = useState<string>("");
+  const [maxDaysOverdue, setMaxDaysOverdue] = useState<string>("");
+  const [minAmountDue, setMinAmountDue] = useState<string>("");
+  const [maxAmountDue, setMaxAmountDue] = useState<string>("");
+  const [debtStatusForSend, setDebtStatusForSend] = useState<string>("");
+  const [showIncludeSelector, setShowIncludeSelector] = useState(false);
+  const [showExcludeSelector, setShowExcludeSelector] = useState(false);
+  const [includedContactIds, setIncludedContactIds] = useState<string[]>([]);
+  const [excludedContactIds, setExcludedContactIds] = useState<string[]>([]);
+  const [confirmChecked, setConfirmChecked] = useState(false);
+  const [createdMassSendId, setCreatedMassSendId] = useState<string | null>(null);
 
   // ── Data from Supabase ───────────────────────────────────
   const { data: debtDetails = [], isLoading: detailsLoading } = useDebtDetails({
@@ -68,6 +75,10 @@ export function GestionDeudas() {
   const { data: summary, isLoading: summaryLoading } = useDebtsSummary();
   const { data: templates = [] } = useTemplates();
   const { data: contacts = [] } = useContacts();
+  const { data: massSends = [] } = useMassSends();
+  const previewMutation = usePreviewMassSend();
+  const createMutation = useCreateMassSend();
+  const runMutation = useRunMassSend();
 
   // ── Grouped view ─────────────────────────────────────────
   const clientesAgrupados = useMemo(() => {
@@ -142,44 +153,114 @@ export function GestionDeudas() {
     XLSX.writeFile(wb, `Deudas_${new Date().toISOString().split("T")[0]}.xlsx`);
   };
 
-  const downloadTemplate = () => {
-    const tpl = [{ Nombre: "Juan Pérez", Teléfono: "+591 7123 4567", Monto: 5000, Concepto: "Factura #001", FechaVencimiento: "2026-04-15" }];
-    const ws = XLSX.utils.json_to_sheet(tpl);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Plantilla");
-    XLSX.writeFile(wb, "Plantilla_Deudas.xlsx");
-  };
+  const massFilters = useMemo(() => ({
+    min_days_overdue: minDaysOverdue ? Number(minDaysOverdue) : null,
+    max_days_overdue: maxDaysOverdue ? Number(maxDaysOverdue) : null,
+    min_amount_due: minAmountDue ? Number(minAmountDue) : null,
+    max_amount_due: maxAmountDue ? Number(maxAmountDue) : null,
+    debt_status: debtStatusForSend || null,
+  }), [debtStatusForSend, maxAmountDue, maxDaysOverdue, minAmountDue, minDaysOverdue]);
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const wb = XLSX.read(ev.target?.result, { type: "binary" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      setDebtPreview(XLSX.utils.sheet_to_json(ws).slice(0, 5));
-    };
-    reader.readAsBinaryString(file);
-  };
+  const massStepProgress = Math.round((currentStep / 5) * 100);
 
   const handleCloseModal = () => {
     setShowCobranzasModal(false);
     setCurrentStep(1);
-    setDebtPreview([]);
-    setReminderMessage("");
+    setMassSendName("");
+    setTemplateId("");
+    setLanguage("es_LA");
+    setMassSendMode("manual");
+    setCronExpression("0 9 * * *");
+    setMinDaysOverdue("");
+    setMaxDaysOverdue("");
+    setMinAmountDue("");
+    setMaxAmountDue("");
+    setDebtStatusForSend("");
+    setIncludedContactIds([]);
+    setExcludedContactIds([]);
+    setConfirmChecked(false);
+    setCreatedMassSendId(null);
+    previewMutation.reset();
   };
 
-  const handleFinishFlow = () => {
-    toast.success(`Recordatorios ${sendType === "manual" ? "enviados" : "programados"} correctamente`);
-    handleCloseModal();
+  const validateStep = (step: MassStep) => {
+    if (step === 1) {
+      if (!massSendName.trim()) {
+        toast.error("Define un nombre para el envío.");
+        return false;
+      }
+      if (!templateId) {
+        toast.error("Selecciona una plantilla aprobada.");
+        return false;
+      }
+      if (massSendMode === "scheduled" && !cronExpression.trim()) {
+        toast.error("La expresión cron es obligatoria en modo programado.");
+        return false;
+      }
+    }
+    if (step === 4 && !previewMutation.data) {
+      toast.error("Debes generar la vista previa antes de continuar.");
+      return false;
+    }
+    if (step === 5 && !confirmChecked) {
+      toast.error("Confirma la revisión final para ejecutar.");
+      return false;
+    }
+    return true;
   };
 
-  const addReminderRule = () =>
-    setReminderRules(r => [...r, { id: String(Date.now()), days: "0", templateId: "" }]);
-  const removeReminderRule = (id: string) =>
-    setReminderRules(r => r.filter(x => x.id !== id));
-  const updateReminderRule = (id: string, field: "days" | "templateId", value: string) =>
-    setReminderRules(r => r.map(x => x.id === id ? { ...x, [field]: value } : x));
+  const nextStep = () => {
+    if (!validateStep(currentStep)) return;
+    setCurrentStep((prev) => Math.min(5, (prev + 1) as MassStep));
+  };
+
+  const prevStep = () => setCurrentStep((prev) => Math.max(1, (prev - 1) as MassStep));
+
+  const runPreview = () => {
+    previewMutation.mutate(massFilters, {
+      onError: (err) => toast.error((err as Error).message),
+    });
+  };
+
+  const effectiveTotalRecipients = Math.max(
+    0,
+    (previewMutation.data?.total_recipients || 0) + includedContactIds.length - excludedContactIds.length
+  );
+
+  const executeMassSend = () => {
+    if (!validateStep(5)) return;
+    createMutation.mutate({
+      name: massSendName.trim(),
+      template_id: templateId,
+      language,
+      filters: {
+        ...massFilters,
+        included_contact_ids: includedContactIds,
+        excluded_contact_ids: excludedContactIds,
+      } as unknown as Record<string, unknown>,
+      mode: massSendMode,
+      schedule: massSendMode === "scheduled"
+        ? { cron_expression: cronExpression.trim(), timezone: "America/Bogota", enabled: true }
+        : null,
+    }, {
+      onSuccess: ({ mass_send }) => {
+        setCreatedMassSendId(mass_send.id);
+        if (massSendMode === "manual") {
+          runMutation.mutate(mass_send.id, {
+            onSuccess: (runResult) => {
+              toast.success(`Envío ejecutado. Sent: ${runResult.summary.sent}, failed: ${runResult.summary.failed}, skipped: ${runResult.summary.skipped}`);
+              handleCloseModal();
+            },
+            onError: (err) => toast.error((err as Error).message),
+          });
+          return;
+        }
+        toast.success("Envío programado correctamente.");
+        handleCloseModal();
+      },
+      onError: (err) => toast.error((err as Error).message),
+    });
+  };
 
   return (
     <div className="space-y-6">
@@ -407,155 +488,234 @@ export function GestionDeudas() {
         </Card>
       )}
 
-      {/* Gestionar Cobranzas Modal */}
-      <Dialog open={showCobranzasModal} onOpenChange={(o) => !o && handleCloseModal()}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      {/* Gestión de envíos masivos con stepper */}
+      <Dialog open={showCobranzasModal} onOpenChange={(open) => !open && handleCloseModal()}>
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Gestionar Cobranzas</DialogTitle>
+            <DialogTitle>Envíos masivos desde Gestión de Deudas</DialogTitle>
             <DialogDescription>
-              {currentStep === 1 ? "Paso 1: Cargar deudas" : "Paso 2: Configurar recordatorio"}
+              Paso {currentStep} de 5 · flujo híbrido con filtros y selección manual de contactos.
             </DialogDescription>
           </DialogHeader>
 
-          {currentStep === 1 ? (
-            <div className="space-y-6">
-              <div className="border-2 border-dashed border-slate-200 rounded-lg p-8 text-center">
-                <Upload className="size-10 text-slate-400 mx-auto mb-3" />
-                <p className="text-slate-600 mb-4">Arrastra un archivo Excel o haz clic para seleccionar</p>
-                <div className="flex gap-3 justify-center">
-                  <Button variant="outline" onClick={downloadTemplate} size="sm">
-                    <Download className="size-4 mr-2" />Descargar plantilla
-                  </Button>
-                  <label>
-                    <Button size="sm" asChild>
-                      <span><Upload className="size-4 mr-2" />Subir archivo</span>
-                    </Button>
-                    <input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} className="hidden" />
-                  </label>
-                </div>
-              </div>
-              {debtPreview.length > 0 && (
-                <div>
-                  <p className="text-sm font-medium text-slate-700 mb-2">Vista previa (primeras 5 filas):</p>
-                  <div className="overflow-x-auto border rounded-lg">
-                    <table className="w-full text-xs">
-                      <thead className="bg-slate-50">
-                        <tr>{Object.keys(debtPreview[0]).map(k => <th key={k} className="p-2 text-left">{k}</th>)}</tr>
-                      </thead>
-                      <tbody>
-                        {debtPreview.map((row, i) => (
-                          <tr key={i} className="border-t">
-                            {Object.values(row).map((v, j) => <td key={j} className="p-2">{String(v)}</td>)}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
+          <div className="space-y-4">
+            <Progress value={massStepProgress} />
+            <div className="flex gap-2 flex-wrap">
+              {[1, 2, 3, 4, 5].map((step) => (
+                <Badge key={step} variant={currentStep === step ? "default" : "outline"}>
+                  {step === 1 ? "Plantilla" : step === 2 ? "Filtros" : step === 3 ? "Audiencia" : step === 4 ? "Preview" : "Confirmar"}
+                </Badge>
+              ))}
             </div>
-          ) : (
-            <div className="space-y-6">
-              {/* Send Type */}
-              <div className="space-y-3">
-                <Label>Tipo de envío</Label>
-                <RadioGroup value={sendType} onValueChange={(v) => setSendType(v as SendType)} className="flex gap-4">
-                  <div className="flex items-center gap-2"><RadioGroupItem value="automatico" id="auto" /><Label htmlFor="auto">Automático</Label></div>
-                  <div className="flex items-center gap-2"><RadioGroupItem value="manual" id="manual" /><Label htmlFor="manual">Manual</Label></div>
-                </RadioGroup>
+          </div>
+
+          {currentStep === 1 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="mass-send-name">Nombre del envío</Label>
+                <Input
+                  id="mass-send-name"
+                  value={massSendName}
+                  onChange={(e) => setMassSendName(e.target.value)}
+                  placeholder="Mora vencida - segmento alto riesgo"
+                />
               </div>
-
-              {sendType === "manual" && (
+              <div className="space-y-2">
+                <Label htmlFor="mass-template">Plantilla aprobada</Label>
+                <Select value={templateId} onValueChange={setTemplateId}>
+                  <SelectTrigger id="mass-template"><SelectValue placeholder="Selecciona plantilla" /></SelectTrigger>
+                  <SelectContent>
+                    {templates
+                      .filter((template) => String(template.meta_status).toUpperCase() === "APPROVED")
+                      .map((template) => (
+                        <SelectItem key={template.id} value={template.id}>{template.template_name}</SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="mass-language">Idioma</Label>
+                <Input id="mass-language" value={language} onChange={(e) => setLanguage(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="mass-mode">Modo</Label>
+                <Select value={massSendMode} onValueChange={(v) => setMassSendMode(v as "manual" | "scheduled")}>
+                  <SelectTrigger id="mass-mode"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="manual">Manual (ejecutar ahora)</SelectItem>
+                    <SelectItem value="scheduled">Programado</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {massSendMode === "scheduled" ? (
                 <div className="space-y-2">
-                  <Label>Mensaje personalizado</Label>
-                  <textarea
-                    className="w-full min-h-[100px] border border-slate-200 rounded-md p-3 text-sm"
-                    placeholder="Escribe tu mensaje aquí..."
-                    value={reminderMessage}
-                    onChange={(e) => setReminderMessage(e.target.value)}
-                  />
+                  <Label htmlFor="mass-cron">Expresión cron</Label>
+                  <Input id="mass-cron" value={cronExpression} onChange={(e) => setCronExpression(e.target.value)} placeholder="0 9 * * *" />
                 </div>
-              )}
+              ) : null}
+            </div>
+          ) : null}
 
-              {sendType === "automatico" && (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <Label>Reglas de recordatorio</Label>
-                    <Button size="sm" variant="outline" onClick={addReminderRule}>
-                      <Plus className="size-4 mr-1" />Agregar regla
-                    </Button>
-                  </div>
-                  {reminderRules.map((rule) => (
-                    <div key={rule.id} className="flex items-center gap-3 p-3 border border-slate-200 rounded-lg">
-                      <div className="flex-1 grid grid-cols-2 gap-3">
+          {currentStep === 2 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Mínimo días mora</Label>
+                <Input type="number" value={minDaysOverdue} onChange={(e) => setMinDaysOverdue(e.target.value)} min={0} />
+              </div>
+              <div className="space-y-2">
+                <Label>Máximo días mora</Label>
+                <Input type="number" value={maxDaysOverdue} onChange={(e) => setMaxDaysOverdue(e.target.value)} min={0} />
+              </div>
+              <div className="space-y-2">
+                <Label>Mínimo monto pendiente</Label>
+                <Input type="number" value={minAmountDue} onChange={(e) => setMinAmountDue(e.target.value)} min={0} />
+              </div>
+              <div className="space-y-2">
+                <Label>Máximo monto pendiente</Label>
+                <Input type="number" value={maxAmountDue} onChange={(e) => setMaxAmountDue(e.target.value)} min={0} />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label>Estado de deuda (opcional)</Label>
+                <Select value={debtStatusForSend || "all"} onValueChange={(v) => setDebtStatusForSend(v === "all" ? "" : v)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="Pending">Pending</SelectItem>
+                    <SelectItem value="Active">Active</SelectItem>
+                    <SelectItem value="Expired">Expired</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          ) : null}
+
+          {currentStep === 3 ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={() => setShowIncludeSelector(true)}>
+                  Seleccionar inclusiones ({includedContactIds.length})
+                </Button>
+                <Button variant="outline" onClick={() => setShowExcludeSelector(true)}>
+                  Seleccionar exclusiones ({excludedContactIds.length})
+                </Button>
+                <Button onClick={runPreview} disabled={previewMutation.isPending}>
+                  {previewMutation.isPending ? "Calculando..." : "Actualizar preview"}
+                </Button>
+              </div>
+              <div className="rounded-md border p-3 text-sm text-slate-600">
+                <p>Base por filtros: <span className="font-medium">{previewMutation.data?.total_recipients ?? 0}</span></p>
+                <p>Incluir manual: <span className="font-medium">{includedContactIds.length}</span></p>
+                <p>Excluir manual: <span className="font-medium">{excludedContactIds.length}</span></p>
+                <p>Total final estimado: <span className="font-semibold">{effectiveTotalRecipients}</span></p>
+              </div>
+              {previewMutation.data?.sample?.length ? (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Muestra de destinatarios por filtro</p>
+                  <div className="max-h-56 overflow-y-auto border rounded-md">
+                    {previewMutation.data.sample.map((item) => (
+                      <div key={item.contact_id} className="flex items-center justify-between px-3 py-2 border-b last:border-0">
                         <div>
-                          <Label className="text-xs">Días (negativo = antes del vencimiento)</Label>
-                          <Input
-                            type="number"
-                            value={rule.days}
-                            onChange={(e) => updateReminderRule(rule.id, "days", e.target.value)}
-                            className="mt-1"
+                          <p className="text-sm">{item.contact_name}</p>
+                          <p className="text-xs text-slate-500">{item.phone_number}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Label htmlFor={`exclude-${item.contact_id}`} className="text-xs text-slate-500">Excluir</Label>
+                          <Checkbox
+                            id={`exclude-${item.contact_id}`}
+                            checked={excludedContactIds.includes(item.contact_id)}
+                            onCheckedChange={(checked) => {
+                              setExcludedContactIds((prev) =>
+                                checked ? Array.from(new Set([...prev, item.contact_id])) : prev.filter((id) => id !== item.contact_id)
+                              );
+                            }}
                           />
                         </div>
-                        <div>
-                          <Label className="text-xs">Plantilla Meta</Label>
-                          <Select value={rule.templateId} onValueChange={(v) => updateReminderRule(rule.id, "templateId", v)}>
-                            <SelectTrigger className="mt-1"><SelectValue placeholder="Seleccionar plantilla" /></SelectTrigger>
-                            <SelectContent>
-                              {templates.map(t => <SelectItem key={t.id} value={t.id}>{t.template_name}</SelectItem>)}
-                            </SelectContent>
-                          </Select>
-                        </div>
                       </div>
-                      {reminderRules.length > 1 && (
-                        <Button size="sm" variant="ghost" onClick={() => removeReminderRule(rule.id)}>
-                          <Trash2 className="size-4 text-red-500" />
-                        </Button>
-                      )}
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
+              ) : (
+                <p className="text-sm text-slate-500">No hay preview generado todavía.</p>
               )}
+            </div>
+          ) : null}
 
-              {/* Target */}
-              <div className="space-y-3">
-                <Label>Destinatarios</Label>
-                <RadioGroup value={reminderTarget} onValueChange={(v) => setReminderTarget(v as any)} className="flex gap-4">
-                  <div className="flex items-center gap-2"><RadioGroupItem value="todos" id="todos" /><Label htmlFor="todos">Todos los clientes</Label></div>
-                  <div className="flex items-center gap-2"><RadioGroupItem value="lista" id="lista" /><Label htmlFor="lista">Lista específica</Label></div>
-                </RadioGroup>
-                {reminderTarget === "lista" && (
-                  <Button variant="outline" onClick={() => setShowContactSelector(true)}>
-                    <Users className="size-4 mr-2" />
-                    Seleccionar contactos ({selectedContactIds.length} seleccionados)
-                  </Button>
-                )}
+          {currentStep === 4 ? (
+            <div className="space-y-3">
+              <Button onClick={runPreview} disabled={previewMutation.isPending}>
+                {previewMutation.isPending ? "Recalculando..." : "Revalidar preview"}
+              </Button>
+              <div className="rounded-md border p-3 text-sm space-y-1">
+                <p>Envío: <span className="font-medium">{massSendName || "—"}</span></p>
+                <p>Plantilla: <span className="font-medium">{templates.find((template) => template.id === templateId)?.template_name || "—"}</span></p>
+                <p>Modo: <span className="font-medium">{massSendMode === "manual" ? "Manual" : "Programado"}</span></p>
+                <p>Total final estimado: <span className="font-semibold">{effectiveTotalRecipients}</span></p>
+                {effectiveTotalRecipients <= 0 ? (
+                  <p className="text-amber-700">Advertencia: no hay destinatarios estimados para enviar.</p>
+                ) : null}
               </div>
             </div>
-          )}
+          ) : null}
+
+          {currentStep === 5 ? (
+            <div className="space-y-4">
+              <div className="rounded-md border p-3 text-sm space-y-1">
+                <p>Nombre: <span className="font-medium">{massSendName}</span></p>
+                <p>Destinatarios estimados: <span className="font-medium">{effectiveTotalRecipients}</span></p>
+                <p>Incluidos manualmente: <span className="font-medium">{includedContactIds.length}</span></p>
+                <p>Excluidos manualmente: <span className="font-medium">{excludedContactIds.length}</span></p>
+                <p>Modo: <span className="font-medium">{massSendMode === "manual" ? "Manual (ejecución inmediata)" : "Programado"}</span></p>
+                {massSendMode === "scheduled" ? <p>Cron: <span className="font-mono">{cronExpression}</span></p> : null}
+                {createdMassSendId ? <p>ID creado: <span className="font-mono">{createdMassSendId}</span></p> : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox id="confirm-final-send" checked={confirmChecked} onCheckedChange={(checked) => setConfirmChecked(Boolean(checked))} />
+                <Label htmlFor="confirm-final-send">Confirmo que revisé filtros, audiencia y plantilla antes de ejecutar.</Label>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={() => navigate("/mensajeria/dashboard")}>Ver impacto en dashboard</Button>
+                <Button variant="outline" onClick={() => navigate("/bandeja")}>Ir a Bandeja</Button>
+              </div>
+            </div>
+          ) : null}
 
           <DialogFooter>
             <Button variant="outline" onClick={handleCloseModal}>Cancelar</Button>
-            {currentStep === 1 ? (
-              <Button onClick={() => debtPreview.length > 0 && setCurrentStep(2)} disabled={debtPreview.length === 0}>
-                Siguiente
-              </Button>
+            {currentStep > 1 ? (
+              <Button variant="outline" onClick={prevStep}>Anterior</Button>
+            ) : null}
+            {currentStep < 5 ? (
+              <Button onClick={nextStep}>Siguiente</Button>
             ) : (
-              <Button onClick={handleFinishFlow}>
-                {sendType === "manual" ? "Enviar ahora" : "Programar recordatorios"}
+              <Button
+                onClick={executeMassSend}
+                disabled={createMutation.isPending || runMutation.isPending || !confirmChecked}
+              >
+                {createMutation.isPending || runMutation.isPending
+                  ? "Procesando..."
+                  : massSendMode === "manual"
+                    ? "Crear y ejecutar"
+                    : "Crear y programar"}
               </Button>
             )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Contact Selector */}
       <ContactSelectorModal
-        open={showContactSelector}
-        onOpenChange={setShowContactSelector}
-        contacts={contacts.map(c => ({ id: c.id, nombre: c.name, telefono: c.phone_number ?? "", email: c.email ?? "" }))}
-        selectedContactIds={selectedContactIds}
-        onSelectedContactIdsChange={setSelectedContactIds}
+        open={showIncludeSelector}
+        onOpenChange={setShowIncludeSelector}
+        contacts={contacts.map((contact) => ({ id: contact.id, nombre: contact.name, telefono: contact.phone_number ?? "", email: contact.email ?? "" }))}
+        selectedContactIds={includedContactIds}
+        onSelectedContactIdsChange={setIncludedContactIds}
+      />
+
+      <ContactSelectorModal
+        open={showExcludeSelector}
+        onOpenChange={setShowExcludeSelector}
+        contacts={contacts.map((contact) => ({ id: contact.id, nombre: contact.name, telefono: contact.phone_number ?? "", email: contact.email ?? "" }))}
+        selectedContactIds={excludedContactIds}
+        onSelectedContactIdsChange={setExcludedContactIds}
       />
     </div>
   );
