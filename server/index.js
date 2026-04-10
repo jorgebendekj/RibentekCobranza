@@ -657,6 +657,13 @@ function extractTemplateName(messageText) {
   return text.replace(/^\[TPL\]\s*/i, '').trim() || null;
 }
 
+function normalizeWhatsAppPhone(rawPhone) {
+  const raw = String(rawPhone || '').trim();
+  if (!raw) return '';
+  // Meta expects digits in E.164 without "+" and no spaces/symbols.
+  return raw.replace(/[^\d]/g, '');
+}
+
 function normalizeMassSendFilters(input = {}) {
   const normalizeIds = (value) => {
     if (!Array.isArray(value)) return [];
@@ -1262,16 +1269,17 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
     let skippedCount = 0;
 
     for (const recipient of recipients) {
-      if (!recipient.phone_number) {
+      const normalizedPhone = normalizeWhatsAppPhone(recipient.phone_number);
+      if (!normalizedPhone) {
         skippedCount += 1;
         await supabaseAdmin.from('whatsapp_mass_send_recipients').insert({
           mass_send_id: massSend.id,
           mass_send_run_id: runRow.id,
           contact_id: recipient.contact_id,
-          phone_number: '',
+          phone_number: String(recipient.phone_number || ''),
           template_name: massSend.template_name,
           status: 'skipped',
-          error_message: 'Missing phone number',
+            error_message: 'Missing or invalid phone number',
           created_by: userId,
           updated_by: userId,
         });
@@ -1289,7 +1297,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
         const payload = {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
-          to: recipient.phone_number,
+          to: normalizedPhone,
           type: 'template',
           template: {
             name: massSend.template_name,
@@ -1311,7 +1319,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
 
         const resolved = await resolveContactAndThread({
           tenantId,
-          phoneNumber: recipient.phone_number,
+          phoneNumber: String(recipient.phone_number || normalizedPhone),
           userId,
           seedLastMessage: `[MASIVO] ${massSend.template_name}`,
         });
@@ -1336,7 +1344,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
 
         const windowState = await getConversationWindowState({
           tenantId,
-          phoneNumber: recipient.phone_number,
+          phoneNumber: String(recipient.phone_number || normalizedPhone),
           explicitThreadId: resolvedThreadId || null,
         });
 
@@ -1358,7 +1366,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
             mass_send_id: massSend.id,
             mass_send_run_id: runRow.id,
             contact_id: resolved.contactId,
-            phone_number: recipient.phone_number,
+            phone_number: String(recipient.phone_number || normalizedPhone),
             template_name: massSend.template_name,
             status: 'sent',
             meta_message_id: metaData?.messages?.[0]?.id || null,
@@ -1371,21 +1379,29 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
         sentCount += 1;
       } catch (sendErr) {
         failedCount += 1;
+        const metaError = sendErr?.message ? String(sendErr.message) : 'Unknown send error';
         await supabaseAdmin
           .from('whatsapp_mass_send_recipients')
           .insert({
             mass_send_id: massSend.id,
             mass_send_run_id: runRow.id,
             contact_id: recipient.contact_id || null,
-            phone_number: recipient.phone_number,
+            phone_number: String(recipient.phone_number || normalizedPhone || ''),
             template_name: massSend.template_name,
             status: 'failed',
-            error_message: sendErr.message,
+            error_message: metaError,
             created_by: userId,
             updated_by: userId,
           });
       }
     }
+
+    const { data: failedRecipients = [] } = await supabaseAdmin
+      .from('whatsapp_mass_send_recipients')
+      .select('phone_number, error_message')
+      .eq('mass_send_run_id', runRow.id)
+      .eq('status', 'failed')
+      .limit(5);
 
     const finalStatus = failedCount > 0 && sentCount === 0 ? 'failed' : 'completed';
     await supabaseAdmin
@@ -1421,6 +1437,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
         filters_applied: massSend.filters || {},
         recipient_count: recipients.length,
       },
+      failed_samples: failedRecipients,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
