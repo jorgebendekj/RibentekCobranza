@@ -21,7 +21,7 @@ export default function NotificationDropdown({
       <div className="flex items-center justify-between px-1 py-1.5">
         <p className="text-sm font-semibold text-slate-900">Notificaciones</p>
         <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onMarkAllRead}>
-          Marcar todo le�do
+          Marcar todo leido
         </Button>
       </div>
       <div className="max-h-[420px] overflow-y-auto space-y-2 p-1" aria-live="polite">
