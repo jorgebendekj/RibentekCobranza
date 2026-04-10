@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import NotificationBell from "./notifications/NotificationBell";
 
 interface SidebarProps {
   children: React.ReactNode;
@@ -149,7 +150,10 @@ export function Layout({ children }: SidebarProps) {
       </aside>
 
       <main className="flex-1 overflow-auto">
-        <div className="p-8">{children}</div>
+        <div className="px-8 pt-5 pb-3 flex items-center justify-end">
+          <NotificationBell />
+        </div>
+        <div className="px-8 pb-8">{children}</div>
       </main>
     </div>
   );

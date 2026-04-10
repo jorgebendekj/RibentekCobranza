@@ -7,6 +7,7 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Textarea } from "../components/ui/textarea";
 import { Badge } from "../components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { Switch } from "../components/ui/switch";
 import { Settings, Eye, EyeOff, Check, RefreshCw, PlusCircle } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -16,8 +17,14 @@ import {
   useCreateMetaTemplate,
   useSyncMetaTemplates,
 } from "../hooks/useWhatsapp";
+import { useNotificationPreferences, useSaveNotificationPreferences } from "../hooks/useNotifications";
 
 type TemplateCategory = "UTILITY" | "MARKETING" | "AUTHENTICATION";
+const DEFAULT_NOTIFICATION_EVENTS = [
+  { event_type: "mass_send_failed", label: "Fallo de envío masivo" },
+  { event_type: "thread_inbound_message", label: "Nuevo mensaje en bandeja" },
+  { event_type: "debt_overdue_threshold", label: "Umbral de mora vencida" },
+];
 
 export default function Configuracion() {
   const { data: config, isLoading } = useWhatsappConfig();
@@ -25,6 +32,8 @@ export default function Configuracion() {
   const saveConfig = useSaveWhatsappConfig();
   const createTemplate = useCreateMetaTemplate();
   const syncTemplates = useSyncMetaTemplates();
+  const { data: notificationPreferences = [], isLoading: preferencesLoading } = useNotificationPreferences();
+  const savePreferences = useSaveNotificationPreferences();
 
   const getInitial = (key: string) => sessionStorage.getItem(`config_draft_${key}`) ?? "";
   const [metaId, setMetaId] = useState(getInitial("metaId"));
@@ -166,9 +175,10 @@ export default function Configuracion() {
         <p className="text-slate-600 mt-2">Gestiona la integración con WhatsApp Business</p>
       </div>
       <Tabs defaultValue="credenciales" className="max-w-5xl">
-        <TabsList className="w-full max-w-md">
+        <TabsList className="w-full max-w-xl">
           <TabsTrigger value="credenciales">Credenciales</TabsTrigger>
           <TabsTrigger value="mensajes">Gestor de Mensajes</TabsTrigger>
+          <TabsTrigger value="notificaciones">Notificaciones</TabsTrigger>
         </TabsList>
 
         <TabsContent value="credenciales" className="space-y-6">
@@ -357,6 +367,58 @@ export default function Configuracion() {
                     </div>
                   ))}
                 </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="notificaciones" className="space-y-6">
+          <Card className="max-w-2xl">
+            <CardHeader>
+              <CardTitle>Preferencias de notificaciones</CardTitle>
+              <p className="text-sm text-slate-600">
+                Define qué eventos deseas recibir en la campana en tiempo real.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {preferencesLoading ? (
+                <>
+                  <Skeleton className="h-11 w-full" />
+                  <Skeleton className="h-11 w-full" />
+                  <Skeleton className="h-11 w-full" />
+                </>
+              ) : (
+                DEFAULT_NOTIFICATION_EVENTS.map((eventDef) => {
+                  const current = notificationPreferences.find((item) => item.event_type === eventDef.event_type);
+                  const checked = current ? current.enabled_in_app : true;
+                  return (
+                    <div key={eventDef.event_type} className="flex items-center justify-between rounded-md border p-3">
+                      <div>
+                        <p className="text-sm font-medium text-slate-900">{eventDef.label}</p>
+                        <p className="text-xs text-slate-500">{eventDef.event_type}</p>
+                      </div>
+                      <Switch
+                        checked={checked}
+                        onCheckedChange={(enabled) => {
+                          const others = notificationPreferences
+                            .filter((item) => item.event_type !== eventDef.event_type)
+                            .map((item) => ({
+                              event_type: item.event_type,
+                              enabled_in_app: item.enabled_in_app,
+                              enabled_email: item.enabled_email,
+                            }));
+                          savePreferences.mutate(
+                            [...others, { event_type: eventDef.event_type, enabled_in_app: enabled, enabled_email: false }],
+                            {
+                              onSuccess: () => toast.success("Preferencia actualizada"),
+                              onError: (err) => toast.error((err as Error).message),
+                            }
+                          );
+                        }}
+                      />
+                    </div>
+                  );
+                })
               )}
             </CardContent>
           </Card>

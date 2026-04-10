@@ -341,6 +341,73 @@ export type Database = {
         Update: Partial<Database['public']['Tables']['whatsapp_mass_send_recipients']['Insert']>;
       };
 
+      notification_events: {
+        Row: {
+          id: string;
+          tenant_id: string;
+          event_type: string;
+          entity_type: string | null;
+          entity_id: string | null;
+          payload: Json;
+          created_at: string;
+          updated_at: string;
+          deleted_at: string | null;
+          created_by: string | null;
+          updated_by: string | null;
+          deleted_by: string | null;
+        };
+        Insert: Omit<Database['public']['Tables']['notification_events']['Row'], 'id' | 'created_at' | 'updated_at'> & {
+          id?: string;
+        };
+        Update: Partial<Database['public']['Tables']['notification_events']['Insert']>;
+      };
+
+      notifications: {
+        Row: {
+          id: string;
+          tenant_id: string;
+          user_id: string;
+          event_id: string | null;
+          title: string;
+          body: string;
+          severity: 'info' | 'warning' | 'critical';
+          action_url: string | null;
+          is_read: boolean;
+          read_at: string | null;
+          created_at: string;
+          updated_at: string;
+          deleted_at: string | null;
+          created_by: string | null;
+          updated_by: string | null;
+          deleted_by: string | null;
+        };
+        Insert: Omit<Database['public']['Tables']['notifications']['Row'], 'id' | 'created_at' | 'updated_at'> & {
+          id?: string;
+        };
+        Update: Partial<Database['public']['Tables']['notifications']['Insert']>;
+      };
+
+      notification_preferences: {
+        Row: {
+          id: string;
+          tenant_id: string;
+          user_id: string;
+          event_type: string;
+          enabled_in_app: boolean;
+          enabled_email: boolean;
+          created_at: string;
+          updated_at: string;
+          deleted_at: string | null;
+          created_by: string | null;
+          updated_by: string | null;
+          deleted_by: string | null;
+        };
+        Insert: Omit<Database['public']['Tables']['notification_preferences']['Row'], 'id' | 'created_at' | 'updated_at'> & {
+          id?: string;
+        };
+        Update: Partial<Database['public']['Tables']['notification_preferences']['Insert']>;
+      };
+
       debts: {
         Row: {
           id: string;
@@ -556,6 +623,9 @@ export type ReminderLog = Tables<'reminder_logs'>;
 export type WhatsappMassSend = Tables<'whatsapp_mass_sends'>;
 export type WhatsappMassSendRun = Tables<'whatsapp_mass_send_runs'>;
 export type WhatsappMassSendRecipient = Tables<'whatsapp_mass_send_recipients'>;
+export type NotificationEvent = Tables<'notification_events'>;
+export type Notification = Tables<'notifications'>;
+export type NotificationPreference = Tables<'notification_preferences'>;
 
 export type UserRole = Database['public']['Enums']['user_role'];
 export type DebtStatus = Database['public']['Enums']['debt_status'];

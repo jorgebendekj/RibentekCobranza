@@ -346,6 +346,25 @@ app.post('/webhooks/meta', async (req, res) => {
                 window_expires_at: inboundWindow.windowExpiresAt,
               })
               .eq('id', threadId);
+
+            await emitNotificationEvent({
+              tenantId,
+              actorUserId: null,
+              eventType: NOTIFICATION_EVENT_TYPES.THREAD_INBOUND_MESSAGE,
+              entityType: 'whatsapp_thread',
+              entityId: threadId,
+              payload: {
+                thread_id: threadId,
+                contact_id: contactId,
+                contact_phone: from,
+                preview: String(text || '').slice(0, 120),
+              },
+              roles: ['Agente', 'Admin'],
+              title: `Nuevo mensaje de ${value.contacts?.[0]?.profile?.name || from}`,
+              body: String(text || '').slice(0, 180) || 'Nuevo mensaje recibido en bandeja.',
+              severity: 'info',
+              actionUrl: '/bandeja',
+            }).catch((error) => console.error('[notifications] inbound message emit error:', error.message));
           }
         }
 
@@ -678,6 +697,100 @@ function normalizeMassSendFilters(input = {}) {
     included_contact_ids: normalizeIds(input.included_contact_ids),
     excluded_contact_ids: normalizeIds(input.excluded_contact_ids),
   };
+}
+
+const NOTIFICATION_EVENT_TYPES = {
+  MASS_SEND_FAILED: 'mass_send_failed',
+  THREAD_INBOUND_MESSAGE: 'thread_inbound_message',
+  DEBT_OVERDUE_THRESHOLD: 'debt_overdue_threshold',
+};
+
+async function resolveNotificationRecipients({ tenantId, audience = 'all_members', roles = [], userIds = [] }) {
+  if (audience === 'users' && userIds.length > 0) {
+    return Array.from(new Set(userIds.map((id) => String(id || '').trim()).filter(Boolean)));
+  }
+  let query = supabaseAdmin
+    .from('tenant_members')
+    .select('user_id, role, enabled')
+    .eq('tenant_id', tenantId)
+    .eq('enabled', true);
+  if (roles.length > 0) query = query.in('role', roles);
+  const { data = [], error } = await query;
+  if (error) throw new Error(error.message);
+  return Array.from(new Set(data.map((row) => row.user_id)));
+}
+
+async function isInAppNotificationEnabled({ tenantId, userId, eventType }) {
+  const { data, error } = await supabaseAdmin
+    .from('notification_preferences')
+    .select('enabled_in_app')
+    .eq('tenant_id', tenantId)
+    .eq('user_id', userId)
+    .eq('event_type', eventType)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (error) return true;
+  if (!data) return true;
+  return Boolean(data.enabled_in_app);
+}
+
+async function emitNotificationEvent({
+  tenantId,
+  actorUserId = null,
+  eventType,
+  entityType = null,
+  entityId = null,
+  payload = {},
+  audience = 'all_members',
+  roles = [],
+  userIds = [],
+  title,
+  body,
+  severity = 'info',
+  actionUrl = null,
+}) {
+  const recipients = await resolveNotificationRecipients({ tenantId, audience, roles, userIds });
+  if (recipients.length === 0) return { event: null, notificationsCreated: 0 };
+
+  const { data: eventRow, error: eventError } = await supabaseAdmin
+    .from('notification_events')
+    .insert({
+      tenant_id: tenantId,
+      event_type: eventType,
+      entity_type: entityType,
+      entity_id: entityId,
+      payload,
+      created_by: actorUserId,
+      updated_by: actorUserId,
+    })
+    .select()
+    .single();
+  if (eventError || !eventRow) throw new Error(eventError?.message || 'Could not create notification event');
+
+  const notificationRows = [];
+  for (const recipientId of recipients) {
+    const enabled = await isInAppNotificationEnabled({ tenantId, userId: recipientId, eventType });
+    if (!enabled) continue;
+    notificationRows.push({
+      tenant_id: tenantId,
+      user_id: recipientId,
+      event_id: eventRow.id,
+      title,
+      body,
+      severity,
+      action_url: actionUrl,
+      is_read: false,
+      created_by: actorUserId,
+      updated_by: actorUserId,
+    });
+  }
+
+  if (notificationRows.length > 0) {
+    const { error: notifError } = await supabaseAdmin.from('notifications').insert(notificationRows);
+    if (notifError) throw new Error(notifError.message);
+  }
+
+  return { event: eventRow, notificationsCreated: notificationRows.length };
 }
 
 async function resolveApprovedTemplateForTenant({ tenantId, templateId, templateName }) {
@@ -1424,6 +1537,28 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
       })
       .eq('id', massSend.id);
 
+    if (failedCount > 0) {
+      await emitNotificationEvent({
+        tenantId,
+        actorUserId: userId,
+        eventType: NOTIFICATION_EVENT_TYPES.MASS_SEND_FAILED,
+        entityType: 'whatsapp_mass_send_run',
+        entityId: runRow.id,
+        payload: {
+          mass_send_id: massSend.id,
+          mass_send_name: massSend.name,
+          failed_count: failedCount,
+          sent_count: sentCount,
+          skipped_count: skippedCount,
+        },
+        roles: ['Admin', 'Superadmin'],
+        title: `Fallo en envío masivo: ${massSend.name}`,
+        body: `El envío registró ${failedCount} fallo(s). Revisa el detalle en mensajería.`,
+        severity: failedCount > 5 ? 'critical' : 'warning',
+        actionUrl: '/mensajeria/masivos',
+      }).catch((error) => console.error('[notifications] mass_send_failed emit error:', error.message));
+    }
+
     return res.json({
       success: true,
       run_id: runRow.id,
@@ -1443,6 +1578,195 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
     return res.status(500).json({ error: err.message });
   }
 });
+
+app.get('/api/notifications', requireWorkspaceMember, async (req, res) => {
+  const { tenantId, userId } = req.workspaceMember;
+  const limit = Math.max(1, Math.min(100, Number(req.query.limit || 20)));
+  const offset = Math.max(0, Number(req.query.offset || 0));
+  try {
+    const { data = [], error, count } = await supabaseAdmin
+      .from('notifications')
+      .select('id, tenant_id, user_id, event_id, title, body, severity, action_url, is_read, read_at, created_at', { count: 'exact' })
+      .eq('tenant_id', tenantId)
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true, items: data, total: count || 0, limit, offset });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/notifications/unread-count', requireWorkspaceMember, async (req, res) => {
+  const { tenantId, userId } = req.workspaceMember;
+  try {
+    const { count, error } = await supabaseAdmin
+      .from('notifications')
+      .select('id', { count: 'exact', head: true })
+      .eq('tenant_id', tenantId)
+      .eq('user_id', userId)
+      .eq('is_read', false)
+      .is('deleted_at', null);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true, unread_count: count || 0 });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/notifications/:id/read', requireWorkspaceMember, async (req, res) => {
+  const { tenantId, userId } = req.workspaceMember;
+  const { id } = req.params;
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('notifications')
+      .update({
+        is_read: true,
+        read_at: new Date().toISOString(),
+        updated_by: userId,
+      })
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .select('id, is_read, read_at')
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: error.message });
+    if (!data) return res.status(404).json({ error: 'Notification not found' });
+    return res.json({ success: true, notification: data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/notifications/read-all', requireWorkspaceMember, async (req, res) => {
+  const { tenantId, userId } = req.workspaceMember;
+  try {
+    const { error } = await supabaseAdmin
+      .from('notifications')
+      .update({
+        is_read: true,
+        read_at: new Date().toISOString(),
+        updated_by: userId,
+      })
+      .eq('tenant_id', tenantId)
+      .eq('user_id', userId)
+      .eq('is_read', false)
+      .is('deleted_at', null);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/notifications/preferences', requireWorkspaceMember, async (req, res) => {
+  const { tenantId, userId } = req.workspaceMember;
+  try {
+    const { data = [], error } = await supabaseAdmin
+      .from('notification_preferences')
+      .select('id, event_type, enabled_in_app, enabled_email, created_at, updated_at')
+      .eq('tenant_id', tenantId)
+      .eq('user_id', userId)
+      .is('deleted_at', null)
+      .order('event_type', { ascending: true });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true, items: data });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/notifications/preferences', requireWorkspaceMember, async (req, res) => {
+  const { tenantId, userId } = req.workspaceMember;
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  if (items.length === 0) return res.status(400).json({ error: 'items[] is required' });
+  try {
+    const rows = items
+      .filter((item) => item?.event_type)
+      .map((item) => ({
+        tenant_id: tenantId,
+        user_id: userId,
+        event_type: String(item.event_type),
+        enabled_in_app: item.enabled_in_app !== false,
+        enabled_email: item.enabled_email === true,
+        updated_by: userId,
+      }));
+    if (rows.length === 0) return res.status(400).json({ error: 'No valid preference rows provided' });
+    const { error } = await supabaseAdmin
+      .from('notification_preferences')
+      .upsert(rows, { onConflict: 'tenant_id,user_id,event_type' });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true, updated: rows.length });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/notifications/debt-threshold/check', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId, userId } = req.workspaceAdmin;
+  const minDaysOverdue = Number(req.body?.min_days_overdue || 30);
+  if (!Number.isFinite(minDaysOverdue) || minDaysOverdue < 0) {
+    return res.status(400).json({ error: 'min_days_overdue must be a positive number' });
+  }
+  try {
+    const { data: detailRows = [], error } = await supabaseAdmin
+      .from('debt_details')
+      .select('id, contact_id, expiration_date, debt_status, contacts(name)')
+      .eq('debt_status', 'Expired')
+      .is('deleted_at', null);
+    if (error) return res.status(500).json({ error: error.message });
+    const now = Date.now();
+    const matches = detailRows.filter((row) => {
+      const ts = new Date(row.expiration_date).getTime();
+      if (!Number.isFinite(ts)) return false;
+      const overdueDays = Math.max(0, Math.floor((now - ts) / 86_400_000));
+      return overdueDays >= minDaysOverdue;
+    });
+    if (matches.length === 0) return res.json({ success: true, emitted: 0, matches: 0 });
+
+    await emitNotificationEvent({
+      tenantId,
+      actorUserId: userId,
+      eventType: NOTIFICATION_EVENT_TYPES.DEBT_OVERDUE_THRESHOLD,
+      entityType: 'debt_details_threshold',
+      entityId: null,
+      payload: { min_days_overdue: minDaysOverdue, matches: matches.length },
+      roles: ['Admin', 'Agente'],
+      title: 'Deudas vencidas en umbral',
+      body: `${matches.length} deudas superan ${minDaysOverdue} días de mora.`,
+      severity: 'warning',
+      actionUrl: '/deudas',
+    });
+    return res.json({ success: true, emitted: 1, matches: matches.length });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+async function requireWorkspaceMember(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const tenantId = req.headers['x-tenant-id'];
+  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No authorization header' });
+  if (!tenantId) return res.status(400).json({ error: 'Missing x-tenant-id header' });
+
+  const token = authHeader.split(' ')[1];
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !user) return res.status(401).json({ error: 'Invalid token' });
+
+  const { data: membership } = await supabaseAdmin
+    .from('tenant_members')
+    .select('role, enabled')
+    .eq('tenant_id', tenantId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+  if (!membership || !membership.enabled) return res.status(403).json({ error: 'Forbidden: workspace membership required' });
+
+  req.workspaceMember = { userId: user.id, tenantId, role: membership.role };
+  next();
+}
 
 async function requireWorkspaceAdmin(req, res, next) {
   const authHeader = req.headers.authorization;
