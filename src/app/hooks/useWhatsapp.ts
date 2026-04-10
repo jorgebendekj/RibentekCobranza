@@ -1,9 +1,11 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { whatsappService } from '../services/whatsapp.service';
+import type { MessagingMetricsFilters } from '../services/whatsapp.service';
 import { useAuth } from '../context/AuthContext';
 
 export const WA_CONFIG_KEY = 'whatsapp-config';
 export const WA_TEMPLATES_KEY = 'whatsapp-templates';
+export const WA_METRICS_KEY = 'whatsapp-metrics';
 
 export function useWhatsappConfig() {
   const { tenantId } = useAuth();
@@ -66,5 +68,14 @@ export function useSyncMetaTemplates() {
   return useMutation({
     mutationFn: () => whatsappService.syncMetaTemplates(tenantId!),
     onSuccess: () => qc.invalidateQueries({ queryKey: [WA_TEMPLATES_KEY, tenantId] }),
+  });
+}
+
+export function useMessagingMetrics(filters: MessagingMetricsFilters) {
+  const { tenantId } = useAuth();
+  return useQuery({
+    queryKey: [WA_METRICS_KEY, tenantId, filters],
+    queryFn: () => whatsappService.getMessagingMetrics(tenantId!, filters),
+    enabled: !!tenantId && !!filters.from && !!filters.to,
   });
 }

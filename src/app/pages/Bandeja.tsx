@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { useNavigate, useLocation } from "react-router";
+import { useNavigate, useLocation, useSearchParams } from "react-router";
 import {
   Search, MessageSquare, Phone, Clock, Bot, User, CheckCheck, Send,
   X, Plus, ChevronRight, Loader2, UserSearch,
@@ -35,19 +35,139 @@ function useDebounce<T>(value: T, ms = 350): T {
   return debounced;
 }
 
+type SendComposerProps = {
+  activePhone: string;
+  isWindowOpen: boolean;
+  selectedTemplateId: string;
+  setSelectedTemplateId: (id: string) => void;
+  templatesLoading: boolean;
+  sendTemplatePending: boolean;
+  approvedTemplates: Array<{ id: string; template_name: string }>;
+  onSendTemplate: () => void;
+  message: string;
+  setMessage: (value: string) => void;
+  onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
+  messageInputRef: React.RefObject<HTMLTextAreaElement | null>;
+  sendPending: boolean;
+  onSend: () => void;
+};
+
+function SendComposer({
+  activePhone,
+  isWindowOpen,
+  selectedTemplateId,
+  setSelectedTemplateId,
+  templatesLoading,
+  sendTemplatePending,
+  approvedTemplates,
+  onSendTemplate,
+  message,
+  setMessage,
+  onKeyDown,
+  messageInputRef,
+  sendPending,
+  onSend,
+}: SendComposerProps) {
+  if (!activePhone) {
+    return (
+      <p className="text-xs text-amber-600 text-center py-2">
+        Este contacto no tiene número de WhatsApp registrado.
+      </p>
+    );
+  }
+
+  if (!isWindowOpen) {
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+          Ventana de 24h cerrada. Solo puedes enviar plantilla aprobada hasta que el cliente responda.
+        </p>
+        <div className="flex items-center gap-2">
+          <select
+            id="bandeja-template-select"
+            value={selectedTemplateId}
+            onChange={(e) => setSelectedTemplateId(e.target.value)}
+            className="flex-1 h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={templatesLoading || sendTemplatePending}
+          >
+            <option value="">
+              {templatesLoading ? "Cargando plantillas..." : "Selecciona plantilla aprobada"}
+            </option>
+            {approvedTemplates.map((template) => (
+              <option key={template.id} value={template.id}>
+                {template.template_name}
+              </option>
+            ))}
+          </select>
+          <Button
+            id="bandeja-send-template-btn"
+            className="h-10 rounded-xl px-4"
+            onClick={onSendTemplate}
+            disabled={!selectedTemplateId || sendTemplatePending}
+          >
+            {sendTemplatePending ? <Loader2 className="size-4 animate-spin" /> : "Enviar plantilla"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-end gap-2">
+      <Textarea
+        id="bandeja-message-input"
+        ref={messageInputRef}
+        placeholder="Escribe un mensaje... (Enter para enviar, Shift+Enter para nueva línea)"
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        onKeyDown={onKeyDown}
+        rows={1}
+        className="flex-1 resize-none max-h-32 text-sm border-slate-200 bg-slate-50 focus-visible:ring-blue-500 rounded-xl overflow-y-auto"
+        style={{ minHeight: "42px", height: "auto" }}
+        disabled={sendPending}
+      />
+      <Button
+        id="bandeja-send-btn"
+        size="icon"
+        className={`shrink-0 size-[42px] rounded-xl transition-all ${
+          message.trim() && !sendPending
+            ? "bg-blue-600 hover:bg-blue-700 shadow-md hover:shadow-blue-200"
+            : "bg-slate-200 cursor-not-allowed"
+        }`}
+        onClick={onSend}
+        disabled={!message.trim() || sendPending}
+        aria-label="Enviar mensaje"
+      >
+        {sendPending ? (
+          <Loader2 className="size-4 animate-spin text-slate-500" />
+        ) : (
+          <Send className={`size-4 ${message.trim() ? "text-white" : "text-slate-400"}`} />
+        )}
+      </Button>
+    </div>
+  );
+}
+
 export function Bandeja() {
   const { tenantId } = useAuth();
   const qc = useQueryClient();
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // UI State
-  const [searchTerm, setSearchTerm] = useState("");
+  const [searchTerm, setSearchTerm] = useState(searchParams.get("q") || "");
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [mode, setMode] = useState<"threads" | "new-contact">("threads");
   const [pendingContact, setPendingContact] = useState<Contact | null>(null);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+  const [threadStateFilter, setThreadStateFilter] = useState<"all" | "activo" | "pendiente" | "resuelto">(
+    (searchParams.get("estado") as "all" | "activo" | "pendiente" | "resuelto") || "all"
+  );
+  const [windowFilter, setWindowFilter] = useState<"all" | "open" | "closed">(
+    (searchParams.get("window") as "all" | "open" | "closed") || "all"
+  );
 
   // Read contact from navigation state (coming from Contactos page)
   useEffect(() => {
@@ -235,9 +355,21 @@ export function Bandeja() {
     setTimeout(() => messageInputRef.current?.focus(), 100);
   };
 
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (searchTerm.trim()) next.set("q", searchTerm.trim());
+    if (threadStateFilter !== "all") next.set("estado", threadStateFilter);
+    if (windowFilter !== "all") next.set("window", windowFilter);
+    setSearchParams(next, { replace: true });
+  }, [searchTerm, threadStateFilter, windowFilter, setSearchParams]);
+
   // ── Filtering (threads mode) ───────────────────────────────────
   const filteredThreads = threads.filter((t) => {
     const q = searchTerm.toLowerCase();
+    const estado = getEstado(t);
+    if (threadStateFilter !== "all" && estado !== threadStateFilter) return false;
+    if (windowFilter === "open" && !t.window_open) return false;
+    if (windowFilter === "closed" && t.window_open) return false;
     return (
       (t.contacts?.name ?? "").toLowerCase().includes(q) ||
       (t.contacts?.phone_number ?? "").includes(searchTerm) ||
@@ -300,21 +432,48 @@ export function Bandeja() {
             {threads.length} conversación{threads.length !== 1 ? "es" : ""} · Realtime activado
           </p>
         </div>
-        <Button
-          size="sm"
-          variant={mode === "new-contact" ? "default" : "outline"}
-          onClick={() => {
-            setMode(m => m === "new-contact" ? "threads" : "new-contact");
-            setSearchTerm("");
-          }}
-          className="gap-1.5"
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => navigate("/mensajeria/dashboard")}>
+            Ver métricas
+          </Button>
+          <Button
+            size="sm"
+            variant={mode === "new-contact" ? "default" : "outline"}
+            onClick={() => {
+              setMode(m => m === "new-contact" ? "threads" : "new-contact");
+              setSearchTerm("");
+            }}
+            className="gap-1.5"
+          >
+            {mode === "new-contact" ? (
+              <><X className="size-3.5" /> Cancelar</>
+            ) : (
+              <><Plus className="size-3.5" /> Nuevo chat</>
+            )}
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          value={threadStateFilter}
+          onChange={(e) => setThreadStateFilter(e.target.value as "all" | "activo" | "pendiente" | "resuelto")}
+          className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
         >
-          {mode === "new-contact" ? (
-            <><X className="size-3.5" /> Cancelar</>
-          ) : (
-            <><Plus className="size-3.5" /> Nuevo chat</>
-          )}
-        </Button>
+          <option value="all">Estado: todos</option>
+          <option value="activo">Estado: activo</option>
+          <option value="pendiente">Estado: pendiente</option>
+          <option value="resuelto">Estado: resuelto</option>
+        </select>
+        <select
+          value={windowFilter}
+          onChange={(e) => setWindowFilter(e.target.value as "all" | "open" | "closed")}
+          className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
+        >
+          <option value="all">Ventana: todas</option>
+          <option value="open">Ventana: abierta</option>
+          <option value="closed">Ventana: cerrada</option>
+        </select>
       </div>
 
       {/* Main chat container */}
@@ -570,84 +729,22 @@ export function Bandeja() {
 
                   {/* Message input */}
                   <div className="bg-white border-t border-slate-100 p-3 shrink-0">
-                    {!activePhone ? (
-                      <p className="text-xs text-amber-600 text-center py-2">
-                        Este contacto no tiene número de WhatsApp registrado.
-                      </p>
-                    ) : (
-                      <>
-                        {!isWindowOpen ? (
-                          <div className="space-y-2">
-                            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
-                              Ventana de 24h cerrada. Solo puedes enviar plantilla aprobada hasta que el cliente responda.
-                            </p>
-                            <div className="flex items-center gap-2">
-                              <select
-                                id="bandeja-template-select"
-                                value={selectedTemplateId}
-                                onChange={(e) => setSelectedTemplateId(e.target.value)}
-                                className="flex-1 h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                disabled={templatesLoading || sendTemplateMutation.isPending}
-                              >
-                                <option value="">
-                                  {templatesLoading ? "Cargando plantillas..." : "Selecciona plantilla aprobada"}
-                                </option>
-                                {approvedTemplates.map((template) => (
-                                  <option key={template.id} value={template.id}>
-                                    {template.template_name}
-                                  </option>
-                                ))}
-                              </select>
-                              <Button
-                                id="bandeja-send-template-btn"
-                                className="h-10 rounded-xl px-4"
-                                onClick={handleSendTemplate}
-                                disabled={!selectedTemplateId || sendTemplateMutation.isPending}
-                              >
-                                {sendTemplateMutation.isPending ? (
-                                  <Loader2 className="size-4 animate-spin" />
-                                ) : (
-                                  "Enviar plantilla"
-                                )}
-                              </Button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex items-end gap-2">
-                            <Textarea
-                              id="bandeja-message-input"
-                              ref={messageInputRef}
-                              placeholder="Escribe un mensaje... (Enter para enviar, Shift+Enter para nueva línea)"
-                              value={message}
-                              onChange={(e) => setMessage(e.target.value)}
-                              onKeyDown={handleKeyDown}
-                              rows={1}
-                              className="flex-1 resize-none max-h-32 text-sm border-slate-200 bg-slate-50 focus-visible:ring-blue-500 rounded-xl overflow-y-auto"
-                              style={{ minHeight: "42px", height: "auto" }}
-                              disabled={sendMutation.isPending}
-                            />
-                            <Button
-                              id="bandeja-send-btn"
-                              size="icon"
-                              className={`shrink-0 size-[42px] rounded-xl transition-all ${
-                                message.trim() && !sendMutation.isPending
-                                  ? "bg-blue-600 hover:bg-blue-700 shadow-md hover:shadow-blue-200"
-                                  : "bg-slate-200 cursor-not-allowed"
-                              }`}
-                              onClick={handleSend}
-                              disabled={!message.trim() || sendMutation.isPending}
-                              aria-label="Enviar mensaje"
-                            >
-                              {sendMutation.isPending ? (
-                                <Loader2 className="size-4 animate-spin text-slate-500" />
-                              ) : (
-                                <Send className={`size-4 ${message.trim() ? "text-white" : "text-slate-400"}`} />
-                              )}
-                            </Button>
-                          </div>
-                        )}
-                      </>
-                    )}
+                    <SendComposer
+                      activePhone={activePhone}
+                      isWindowOpen={isWindowOpen}
+                      selectedTemplateId={selectedTemplateId}
+                      setSelectedTemplateId={setSelectedTemplateId}
+                      templatesLoading={templatesLoading}
+                      sendTemplatePending={sendTemplateMutation.isPending}
+                      approvedTemplates={approvedTemplates.map((template) => ({ id: template.id, template_name: template.template_name }))}
+                      onSendTemplate={handleSendTemplate}
+                      message={message}
+                      setMessage={setMessage}
+                      onKeyDown={handleKeyDown}
+                      messageInputRef={messageInputRef}
+                      sendPending={sendMutation.isPending}
+                      onSend={handleSend}
+                    />
                     {/* Hint */}
                     <div className="flex items-center gap-1.5 mt-1.5 px-1">
                       <Clock className="size-3 text-slate-300" />

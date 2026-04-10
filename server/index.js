@@ -639,6 +639,251 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
   }
 });
 
+function toDayKey(isoDate) {
+  return new Date(isoDate).toISOString().slice(0, 10);
+}
+
+function conversationStateFromLastInteraction(lastInteraction) {
+  if (!lastInteraction) return 'pendiente';
+  const hrs = (Date.now() - new Date(lastInteraction).getTime()) / 3_600_000;
+  if (hrs < 1) return 'activo';
+  if (hrs < 48) return 'pendiente';
+  return 'resuelto';
+}
+
+function extractTemplateName(messageText) {
+  const text = String(messageText || '').trim();
+  if (!text.startsWith('[TPL]')) return null;
+  return text.replace(/^\[TPL\]\s*/i, '').trim() || null;
+}
+
+/**
+ * GET /api/meta/metrics
+ * Query: from, to, conversation_state?, message_type?, window_state?, template?, search?
+ */
+app.get('/api/meta/metrics', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId } = req.workspaceAdmin;
+  const {
+    from,
+    to,
+    conversation_state,
+    message_type,
+    window_state,
+    template,
+    search,
+  } = req.query || {};
+
+  const fromIso = from ? new Date(String(from)).toISOString() : null;
+  const toIso = to ? new Date(String(to)).toISOString() : null;
+
+  if (!fromIso || !toIso || Number.isNaN(new Date(fromIso).getTime()) || Number.isNaN(new Date(toIso).getTime())) {
+    return res.status(400).json({ error: 'Valid from/to query params are required (ISO date)' });
+  }
+  if (new Date(fromIso).getTime() > new Date(toIso).getTime()) {
+    return res.status(400).json({ error: 'from date must be before to date' });
+  }
+
+  const normalizedSearch = String(search || '').trim().toLowerCase();
+  const normalizedTemplate = String(template || '').trim().toLowerCase();
+  const normalizedConversationState = String(conversation_state || '').trim().toLowerCase();
+  const normalizedMessageType = String(message_type || '').trim().toLowerCase(); // all | text | template
+  const normalizedWindowState = String(window_state || '').trim().toLowerCase(); // all | open | closed
+
+  try {
+    const { data: threadsData, error: threadsError } = await supabaseAdmin
+      .from('whatsapp_threads')
+      .select(`
+        id,
+        contact_id,
+        last_interaction,
+        window_open,
+        contacts(name, phone_number)
+      `)
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null);
+
+    if (threadsError) return res.status(500).json({ error: threadsError.message });
+    const threads = threadsData || [];
+
+    const filteredThreads = threads.filter((thread) => {
+      const state = conversationStateFromLastInteraction(thread.last_interaction);
+      if (normalizedConversationState && normalizedConversationState !== 'all' && state !== normalizedConversationState) {
+        return false;
+      }
+      if (normalizedWindowState === 'open' && !thread.window_open) return false;
+      if (normalizedWindowState === 'closed' && thread.window_open) return false;
+      if (!normalizedSearch) return true;
+      const name = String(thread.contacts?.name || '').toLowerCase();
+      const phone = String(thread.contacts?.phone_number || '').toLowerCase();
+      return name.includes(normalizedSearch) || phone.includes(normalizedSearch) || String(thread.id).toLowerCase().includes(normalizedSearch);
+    });
+
+    const filteredThreadIds = filteredThreads.map((thread) => thread.id);
+    if (filteredThreadIds.length === 0) {
+      return res.json({
+        success: true,
+        kpis: {
+          sent_messages: 0,
+          responded_messages: 0,
+          response_rate: 0,
+          templates_sent: 0,
+          active_conversations: 0,
+          closed_window_conversations: 0,
+        },
+        timeseries: [],
+        template_stats: [],
+        top_contacts: [],
+        conversation_stats: { activo: 0, pendiente: 0, resuelto: 0 },
+        detail: [],
+        applied_filters: {
+          from: fromIso,
+          to: toIso,
+          conversation_state: normalizedConversationState || 'all',
+          message_type: normalizedMessageType || 'all',
+          window_state: normalizedWindowState || 'all',
+          template: normalizedTemplate || null,
+          search: normalizedSearch || null,
+        },
+      });
+    }
+
+    const { data: messagesData, error: messagesError } = await supabaseAdmin
+      .from('whatsapp_messages')
+      .select('id, whatsapp_thread_id, message_text, incoming, read, created_at')
+      .in('whatsapp_thread_id', filteredThreadIds)
+      .is('deleted_at', null)
+      .gte('created_at', fromIso)
+      .lte('created_at', toIso);
+
+    if (messagesError) return res.status(500).json({ error: messagesError.message });
+    const allMessages = messagesData || [];
+
+    const threadById = new Map(filteredThreads.map((thread) => [thread.id, thread]));
+    const filteredMessages = allMessages.filter((message) => {
+      const templateName = extractTemplateName(message.message_text);
+      const isTemplate = !!templateName;
+
+      if (normalizedMessageType === 'text' && isTemplate) return false;
+      if (normalizedMessageType === 'template' && !isTemplate) return false;
+      if (normalizedTemplate && (!templateName || !templateName.toLowerCase().includes(normalizedTemplate))) return false;
+
+      if (!normalizedSearch) return true;
+      const thread = threadById.get(message.whatsapp_thread_id);
+      const contactName = String(thread?.contacts?.name || '').toLowerCase();
+      const contactPhone = String(thread?.contacts?.phone_number || '').toLowerCase();
+      const messageText = String(message.message_text || '').toLowerCase();
+      return (
+        messageText.includes(normalizedSearch)
+        || contactName.includes(normalizedSearch)
+        || contactPhone.includes(normalizedSearch)
+      );
+    });
+
+    const outgoingMessages = filteredMessages.filter((message) => !message.incoming);
+    const incomingMessages = filteredMessages.filter((message) => message.incoming);
+    const templateMessages = outgoingMessages.filter((message) => extractTemplateName(message.message_text));
+
+    const timeseriesMap = new Map();
+    filteredMessages.forEach((message) => {
+      const day = toDayKey(message.created_at);
+      if (!timeseriesMap.has(day)) {
+        timeseriesMap.set(day, { day, sent: 0, responded: 0 });
+      }
+      const bucket = timeseriesMap.get(day);
+      if (message.incoming) bucket.responded += 1;
+      else bucket.sent += 1;
+    });
+    const timeseries = Array.from(timeseriesMap.values()).sort((a, b) => a.day.localeCompare(b.day));
+
+    const templateCounter = new Map();
+    templateMessages.forEach((message) => {
+      const tpl = extractTemplateName(message.message_text);
+      if (!tpl) return;
+      templateCounter.set(tpl, (templateCounter.get(tpl) || 0) + 1);
+    });
+    const templateStats = Array.from(templateCounter.entries())
+      .map(([template_name, sent]) => ({ template_name, sent }))
+      .sort((a, b) => b.sent - a.sent)
+      .slice(0, 10);
+
+    const contactCounter = new Map();
+    filteredMessages.forEach((message) => {
+      const thread = threadById.get(message.whatsapp_thread_id);
+      const key = message.whatsapp_thread_id;
+      const current = contactCounter.get(key) || {
+        thread_id: key,
+        contact_name: thread?.contacts?.name || 'Desconocido',
+        phone_number: thread?.contacts?.phone_number || null,
+        total: 0,
+      };
+      current.total += 1;
+      contactCounter.set(key, current);
+    });
+    const topContacts = Array.from(contactCounter.values()).sort((a, b) => b.total - a.total).slice(0, 10);
+
+    const conversationStats = { activo: 0, pendiente: 0, resuelto: 0 };
+    filteredThreads.forEach((thread) => {
+      const state = conversationStateFromLastInteraction(thread.last_interaction);
+      conversationStats[state] += 1;
+    });
+
+    const detail = filteredMessages
+      .slice()
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, 100)
+      .map((message) => {
+        const thread = threadById.get(message.whatsapp_thread_id);
+        const tpl = extractTemplateName(message.message_text);
+        return {
+          id: message.id,
+          created_at: message.created_at,
+          thread_id: message.whatsapp_thread_id,
+          contact_name: thread?.contacts?.name || 'Desconocido',
+          phone_number: thread?.contacts?.phone_number || null,
+          direction: message.incoming ? 'inbound' : 'outbound',
+          message_type: tpl ? 'template' : 'text',
+          template_name: tpl,
+          read: message.read,
+          preview: String(message.message_text || '').slice(0, 140),
+          window_open: !!thread?.window_open,
+          conversation_state: conversationStateFromLastInteraction(thread?.last_interaction || null),
+        };
+      });
+
+    const responseRate = outgoingMessages.length > 0
+      ? Number(((incomingMessages.length / outgoingMessages.length) * 100).toFixed(2))
+      : 0;
+
+    return res.json({
+      success: true,
+      kpis: {
+        sent_messages: outgoingMessages.length,
+        responded_messages: incomingMessages.length,
+        response_rate: responseRate,
+        templates_sent: templateMessages.length,
+        active_conversations: conversationStats.activo,
+        closed_window_conversations: filteredThreads.filter((thread) => !thread.window_open).length,
+      },
+      timeseries,
+      template_stats: templateStats,
+      top_contacts: topContacts,
+      conversation_stats: conversationStats,
+      detail,
+      applied_filters: {
+        from: fromIso,
+        to: toIso,
+        conversation_state: normalizedConversationState || 'all',
+        message_type: normalizedMessageType || 'all',
+        window_state: normalizedWindowState || 'all',
+        template: normalizedTemplate || null,
+        search: normalizedSearch || null,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 async function requireWorkspaceAdmin(req, res, next) {
   const authHeader = req.headers.authorization;
   const tenantId = req.headers['x-tenant-id'];

@@ -3,6 +3,46 @@ import type { Database, WhatsappConfiguration, WhatsappTemplate, Contact } from 
 
 type TemplateInsert = Database['public']['Tables']['whatsapp_templates']['Insert'];
 
+export interface MessagingMetricsFilters {
+  from: string;
+  to: string;
+  conversation_state?: 'all' | 'activo' | 'pendiente' | 'resuelto';
+  message_type?: 'all' | 'text' | 'template';
+  window_state?: 'all' | 'open' | 'closed';
+  template?: string;
+  search?: string;
+}
+
+export interface MessagingMetricsResponse {
+  success: boolean;
+  kpis: {
+    sent_messages: number;
+    responded_messages: number;
+    response_rate: number;
+    templates_sent: number;
+    active_conversations: number;
+    closed_window_conversations: number;
+  };
+  timeseries: Array<{ day: string; sent: number; responded: number }>;
+  template_stats: Array<{ template_name: string; sent: number }>;
+  top_contacts: Array<{ thread_id: string; contact_name: string; phone_number: string | null; total: number }>;
+  conversation_stats: { activo: number; pendiente: number; resuelto: number };
+  detail: Array<{
+    id: string;
+    created_at: string;
+    thread_id: string;
+    contact_name: string;
+    phone_number: string | null;
+    direction: 'inbound' | 'outbound';
+    message_type: 'text' | 'template';
+    template_name: string | null;
+    read: boolean;
+    preview: string;
+    window_open: boolean;
+    conversation_state: 'activo' | 'pendiente' | 'resuelto';
+  }>;
+}
+
 function getAdminBaseUrl() {
   const envUrl = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL;
   if (envUrl) return envUrl;
@@ -197,6 +237,34 @@ export const whatsappService = {
     const json = await res.json();
     if (!res.ok) throw new Error(json.message || json.error || 'Error enviando plantilla');
     return json as { success: boolean; message?: Record<string, unknown>; template_name?: string };
+  },
+
+  async getMessagingMetrics(tenantId: string, filters: MessagingMetricsFilters) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = getAdminBaseUrl();
+
+    const params = new URLSearchParams({
+      from: filters.from,
+      to: filters.to,
+      conversation_state: filters.conversation_state || 'all',
+      message_type: filters.message_type || 'all',
+      window_state: filters.window_state || 'all',
+    });
+    if (filters.template) params.set('template', filters.template);
+    if (filters.search) params.set('search', filters.search);
+
+    const res = await fetch(`${adminUrl}/api/meta/metrics?${params.toString()}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Error obteniendo métricas de mensajería');
+    return json as MessagingMetricsResponse;
   },
 
   /** Search contacts by name or phone within a tenant */
