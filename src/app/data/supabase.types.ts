@@ -225,6 +225,8 @@ export type Database = {
           read_at: string | null;
           sent_at: string | null;
           reminder_log_id: string | null;
+          mass_send_id: string | null;
+          mass_send_run_id: string | null;
           created_at: string;
           updated_at: string;
           deleted_at: string | null;
@@ -236,6 +238,107 @@ export type Database = {
           id?: string;
         };
         Update: Partial<Database['public']['Tables']['whatsapp_messages']['Insert']>;
+      };
+
+      whatsapp_mass_sends: {
+        Row: {
+          id: string;
+          tenant_id: string;
+          whatsapp_template_id: string | null;
+          name: string;
+          template_name: string;
+          language: string;
+          template_parameters: unknown;
+          filters: unknown;
+          mode: 'manual' | 'scheduled';
+          status: 'draft' | 'active' | 'paused' | 'completed';
+          created_at: string;
+          updated_at: string;
+          deleted_at: string | null;
+          created_by: string | null;
+          updated_by: string | null;
+          deleted_by: string | null;
+        };
+        Insert: Omit<Database['public']['Tables']['whatsapp_mass_sends']['Row'], 'id' | 'created_at' | 'updated_at'> & {
+          id?: string;
+        };
+        Update: Partial<Database['public']['Tables']['whatsapp_mass_sends']['Insert']>;
+      };
+
+      whatsapp_mass_send_schedules: {
+        Row: {
+          id: string;
+          mass_send_id: string;
+          cron_expression: string;
+          timezone: string;
+          next_run_at: string | null;
+          last_run_at: string | null;
+          enabled: boolean;
+          created_at: string;
+          updated_at: string;
+          deleted_at: string | null;
+          created_by: string | null;
+          updated_by: string | null;
+          deleted_by: string | null;
+        };
+        Insert: Omit<Database['public']['Tables']['whatsapp_mass_send_schedules']['Row'], 'id' | 'created_at' | 'updated_at'> & {
+          id?: string;
+        };
+        Update: Partial<Database['public']['Tables']['whatsapp_mass_send_schedules']['Insert']>;
+      };
+
+      whatsapp_mass_send_runs: {
+        Row: {
+          id: string;
+          mass_send_id: string;
+          tenant_id: string;
+          trigger_type: 'manual' | 'scheduled';
+          status: 'running' | 'completed' | 'failed';
+          total_recipients: number;
+          sent_count: number;
+          failed_count: number;
+          skipped_count: number;
+          started_at: string;
+          finished_at: string | null;
+          error_summary: string | null;
+          created_at: string;
+          updated_at: string;
+          deleted_at: string | null;
+          created_by: string | null;
+          updated_by: string | null;
+          deleted_by: string | null;
+        };
+        Insert: Omit<Database['public']['Tables']['whatsapp_mass_send_runs']['Row'], 'id' | 'created_at' | 'updated_at'> & {
+          id?: string;
+        };
+        Update: Partial<Database['public']['Tables']['whatsapp_mass_send_runs']['Insert']>;
+      };
+
+      whatsapp_mass_send_recipients: {
+        Row: {
+          id: string;
+          mass_send_id: string;
+          mass_send_run_id: string;
+          contact_id: string | null;
+          phone_number: string;
+          template_name: string;
+          status: 'sent' | 'failed' | 'skipped';
+          error_message: string | null;
+          meta_message_id: string | null;
+          whatsapp_thread_id: string | null;
+          whatsapp_message_id: string | null;
+          sent_at: string | null;
+          created_at: string;
+          updated_at: string;
+          deleted_at: string | null;
+          created_by: string | null;
+          updated_by: string | null;
+          deleted_by: string | null;
+        };
+        Insert: Omit<Database['public']['Tables']['whatsapp_mass_send_recipients']['Row'], 'id' | 'created_at' | 'updated_at'> & {
+          id?: string;
+        };
+        Update: Partial<Database['public']['Tables']['whatsapp_mass_send_recipients']['Insert']>;
       };
 
       debts: {
@@ -450,6 +553,9 @@ export type DebtDetail = Tables<'debt_details'>;
 export type Reminder = Tables<'reminders'>;
 export type ReminderProgram = Tables<'reminder_programs'>;
 export type ReminderLog = Tables<'reminder_logs'>;
+export type WhatsappMassSend = Tables<'whatsapp_mass_sends'>;
+export type WhatsappMassSendRun = Tables<'whatsapp_mass_send_runs'>;
+export type WhatsappMassSendRecipient = Tables<'whatsapp_mass_send_recipients'>;
 
 export type UserRole = Database['public']['Enums']['user_role'];
 export type DebtStatus = Database['public']['Enums']['debt_status'];

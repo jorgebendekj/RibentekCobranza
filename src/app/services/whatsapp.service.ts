@@ -22,10 +22,13 @@ export interface MessagingMetricsResponse {
     templates_sent: number;
     active_conversations: number;
     closed_window_conversations: number;
+    mass_sent_messages?: number;
+    mass_send_runs?: number;
   };
   timeseries: Array<{ day: string; sent: number; responded: number }>;
   template_stats: Array<{ template_name: string; sent: number }>;
   top_contacts: Array<{ thread_id: string; contact_name: string; phone_number: string | null; total: number }>;
+  top_mass_sends?: Array<{ name: string; sent: number; failed: number }>;
   conversation_stats: { activo: number; pendiente: number; resuelto: number };
   detail: Array<{
     id: string;
@@ -41,6 +44,35 @@ export interface MessagingMetricsResponse {
     window_open: boolean;
     conversation_state: 'activo' | 'pendiente' | 'resuelto';
   }>;
+}
+
+export interface MassSendFilters {
+  min_days_overdue?: number | null;
+  max_days_overdue?: number | null;
+  min_amount_due?: number | null;
+  max_amount_due?: number | null;
+  debt_status?: string | null;
+}
+
+export interface MassSend {
+  id: string;
+  name: string;
+  template_name: string;
+  language: string;
+  mode: 'manual' | 'scheduled';
+  status: 'draft' | 'active' | 'paused' | 'completed';
+  filters: MassSendFilters;
+  created_at: string;
+  updated_at: string;
+  last_run?: {
+    id: string;
+    status: 'running' | 'completed' | 'failed';
+    sent_count: number;
+    failed_count: number;
+    skipped_count: number;
+    started_at: string;
+    finished_at: string | null;
+  } | null;
 }
 
 function getAdminBaseUrl() {
@@ -265,6 +297,116 @@ export const whatsappService = {
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Error obteniendo métricas de mensajería');
     return json as MessagingMetricsResponse;
+  },
+
+  async previewMassSend(
+    tenantId: string,
+    filters: MassSendFilters
+  ): Promise<{
+    success: boolean;
+    total_recipients: number;
+    sample: Array<{
+      contact_id: string;
+      phone_number: string;
+      contact_name: string;
+      total_pending: number;
+      debt_status: string;
+      max_days_overdue: number;
+    }>;
+    applied_filters: MassSendFilters;
+  }> {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = getAdminBaseUrl();
+    const res = await fetch(`${adminUrl}/api/meta/mass-sends/preview`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+      body: JSON.stringify({ filters }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Error previsualizando envío masivo');
+    return json;
+  },
+
+  async createMassSend(
+    tenantId: string,
+    payload: {
+      name: string;
+      template_id?: string;
+      template_name?: string;
+      language?: string;
+      template_parameters?: string[];
+      filters?: MassSendFilters;
+      mode?: 'manual' | 'scheduled';
+      schedule?: {
+        cron_expression: string;
+        timezone?: string;
+        next_run_at?: string | null;
+        enabled?: boolean;
+      } | null;
+    }
+  ) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = getAdminBaseUrl();
+    const res = await fetch(`${adminUrl}/api/meta/mass-sends`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Error creando envío masivo');
+    return json as { success: boolean; mass_send: MassSend };
+  },
+
+  async runMassSend(tenantId: string, massSendId: string) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = getAdminBaseUrl();
+    const res = await fetch(`${adminUrl}/api/meta/mass-sends/${massSendId}/run`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+      body: JSON.stringify({ trigger_type: 'manual' }),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Error ejecutando envío masivo');
+    return json as {
+      success: boolean;
+      run_id: string;
+      summary: { total_recipients: number; sent: number; failed: number; skipped: number };
+    };
+  },
+
+  async getMassSends(tenantId: string) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = getAdminBaseUrl();
+    const res = await fetch(`${adminUrl}/api/meta/mass-sends`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Error listando envíos masivos');
+    return json as { success: boolean; items: MassSend[] };
   },
 
   /** Search contacts by name or phone within a tenant */

@@ -154,6 +154,7 @@ export default function MessagingDashboard() {
         </div>
         <div className="flex items-center gap-2">
           {isFetching ? <Badge variant="outline">Actualizando...</Badge> : null}
+          <Button variant="outline" onClick={() => navigate("/mensajeria/masivos")}>Ir a Masivos</Button>
           <Button variant="outline" onClick={() => navigate("/bandeja")}>Ir a Bandeja</Button>
         </div>
       </div>
@@ -249,6 +250,16 @@ export default function MessagingDashboard() {
               title="Ventana cerrada"
               value={data?.kpis.closed_window_conversations ?? 0}
               hint={isPreviousLoading ? "Comparando..." : deltaHint(data?.kpis.closed_window_conversations ?? 0, previousData?.kpis.closed_window_conversations ?? 0)}
+            />
+            <KpiCard
+              title="Mensajes desde masivos"
+              value={data?.kpis.mass_sent_messages ?? 0}
+              hint={isPreviousLoading ? "Comparando..." : deltaHint(data?.kpis.mass_sent_messages ?? 0, previousData?.kpis.mass_sent_messages ?? 0)}
+            />
+            <KpiCard
+              title="Ejecuciones masivas"
+              value={data?.kpis.mass_send_runs ?? 0}
+              hint={isPreviousLoading ? "Comparando..." : deltaHint(data?.kpis.mass_send_runs ?? 0, previousData?.kpis.mass_send_runs ?? 0)}
             />
           </>
         )}
@@ -353,6 +364,28 @@ export default function MessagingDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="border-slate-200">
+        <CardHeader>
+          <CardTitle className="text-base">Impacto de envíos masivos</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <Skeleton className="h-28 w-full" />
+          ) : data?.top_mass_sends?.length ? (
+            <div className="space-y-2">
+              {data.top_mass_sends.map((row, idx) => (
+                <div key={`${row.name}-${idx}`} className="flex items-center justify-between rounded-md border px-3 py-2">
+                  <p className="text-sm font-medium">{row.name}</p>
+                  <p className="text-xs text-slate-500">sent {row.sent} · failed {row.failed}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-500">No hay ejecuciones masivas en el rango seleccionado.</p>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="border-slate-200">
         <CardHeader>

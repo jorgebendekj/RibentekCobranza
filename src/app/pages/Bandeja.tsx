@@ -385,6 +385,7 @@ export function Bandeja() {
   const activePhone = selectedThread?.contacts?.phone_number ?? pendingContact?.phone_number ?? "";
   const isActive = !!selectedThread || !!pendingContact;
   const isWindowOpen = selectedThread?.window_open ?? false;
+  const hasMassSendOrigin = allMessages.some((msg) => !msg.incoming && !!msg.mass_send_id);
 
   // ── Helpers ───────────────────────────────────────────────────
   const formatRelativeTime = (iso: string | null) => {
@@ -435,6 +436,9 @@ export function Bandeja() {
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => navigate("/mensajeria/dashboard")}>
             Ver métricas
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => navigate("/mensajeria/masivos")}>
+            Ir a Masivos
           </Button>
           <Button
             size="sm"
@@ -647,6 +651,11 @@ export function Bandeja() {
                               {isWindowOpen ? "Ventana activa" : "Solo plantilla"}
                             </Badge>
                           )}
+                          {hasMassSendOrigin ? (
+                            <Badge variant="outline" className="text-[10px] font-medium bg-violet-50 text-violet-700 border-violet-200">
+                              Origen: envío masivo
+                            </Badge>
+                          ) : null}
                         </div>
                       </div>
                     </div>

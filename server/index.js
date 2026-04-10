@@ -657,6 +657,121 @@ function extractTemplateName(messageText) {
   return text.replace(/^\[TPL\]\s*/i, '').trim() || null;
 }
 
+function normalizeMassSendFilters(input = {}) {
+  return {
+    min_days_overdue: Number.isFinite(Number(input.min_days_overdue)) ? Number(input.min_days_overdue) : null,
+    max_days_overdue: Number.isFinite(Number(input.max_days_overdue)) ? Number(input.max_days_overdue) : null,
+    min_amount_due: Number.isFinite(Number(input.min_amount_due)) ? Number(input.min_amount_due) : null,
+    max_amount_due: Number.isFinite(Number(input.max_amount_due)) ? Number(input.max_amount_due) : null,
+    debt_status: input.debt_status ? String(input.debt_status) : null,
+  };
+}
+
+async function resolveApprovedTemplateForTenant({ tenantId, templateId, templateName }) {
+  const { data: config, error: configError } = await supabaseAdmin
+    .from('whatsapp_configurations')
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
+    .single();
+  if (configError || !config) throw new Error('WhatsApp config not found');
+
+  let query = supabaseAdmin
+    .from('whatsapp_templates')
+    .select('id, template_name, language, meta_status')
+    .eq('whatsapp_configuration_id', config.id)
+    .eq('meta_status', 'APPROVED')
+    .is('deleted_at', null)
+    .limit(1);
+
+  if (templateId) query = query.eq('id', String(templateId));
+  else if (templateName) query = query.eq('template_name', String(templateName));
+  else throw new Error('template_id or template_name is required');
+
+  const { data: approvedTemplate, error: templateError } = await query.maybeSingle();
+  if (templateError || !approvedTemplate) throw new Error('Approved template not found for this workspace');
+  return approvedTemplate;
+}
+
+async function buildMassSendCandidates({ tenantId, filters, sampleLimit = 20 }) {
+  const normalizedFilters = normalizeMassSendFilters(filters || {});
+  let debtsQuery = supabaseAdmin
+    .from('debts')
+    .select(`
+      id,
+      contact_id,
+      total_pending,
+      debt_status,
+      contacts!inner(id, name, phone_number)
+    `)
+    .eq('tenant_id', tenantId)
+    .is('deleted_at', null);
+
+  if (normalizedFilters.debt_status) debtsQuery = debtsQuery.eq('debt_status', normalizedFilters.debt_status);
+  if (normalizedFilters.min_amount_due !== null) debtsQuery = debtsQuery.gte('total_pending', normalizedFilters.min_amount_due);
+  if (normalizedFilters.max_amount_due !== null) debtsQuery = debtsQuery.lte('total_pending', normalizedFilters.max_amount_due);
+
+  const { data: debtsRows = [], error: debtsError } = await debtsQuery;
+  if (debtsError) throw new Error(debtsError.message);
+
+  const contactsMap = new Map();
+  for (const debt of debtsRows) {
+    const phone = String(debt.contacts?.phone_number || '').trim();
+    if (!phone) continue;
+    const existing = contactsMap.get(debt.contact_id);
+    if (!existing || Number(debt.total_pending || 0) > Number(existing.total_pending || 0)) {
+      contactsMap.set(debt.contact_id, {
+        contact_id: debt.contact_id,
+        phone_number: phone,
+        contact_name: debt.contacts?.name || phone,
+        total_pending: Number(debt.total_pending || 0),
+        debt_status: debt.debt_status,
+      });
+    }
+  }
+
+  const contactIds = Array.from(contactsMap.keys());
+  let maxOverdueByContact = new Map();
+  if (contactIds.length > 0) {
+    const { data: detailRows = [], error: detailsError } = await supabaseAdmin
+      .from('debt_details')
+      .select('contact_id, expiration_date, debt_status')
+      .in('contact_id', contactIds)
+      .is('deleted_at', null);
+    if (detailsError) throw new Error(detailsError.message);
+
+    const now = Date.now();
+    for (const row of detailRows) {
+      if (String(row.debt_status || '').toLowerCase() === 'paid') continue;
+      const expirationTs = new Date(row.expiration_date).getTime();
+      if (!Number.isFinite(expirationTs)) continue;
+      const overdue = Math.max(0, Math.floor((now - expirationTs) / 86_400_000));
+      const curr = maxOverdueByContact.get(row.contact_id) || 0;
+      if (overdue > curr) maxOverdueByContact.set(row.contact_id, overdue);
+    }
+  }
+
+  let candidates = Array.from(contactsMap.values()).map((item) => ({
+    ...item,
+    max_days_overdue: maxOverdueByContact.get(item.contact_id) || 0,
+  }));
+
+  if (normalizedFilters.min_days_overdue !== null) {
+    candidates = candidates.filter((item) => item.max_days_overdue >= normalizedFilters.min_days_overdue);
+  }
+  if (normalizedFilters.max_days_overdue !== null) {
+    candidates = candidates.filter((item) => item.max_days_overdue <= normalizedFilters.max_days_overdue);
+  }
+
+  candidates.sort((a, b) => b.total_pending - a.total_pending);
+  return {
+    filters: normalizedFilters,
+    total: candidates.length,
+    sample: candidates.slice(0, sampleLimit),
+    candidates,
+  };
+}
+
 /**
  * GET /api/meta/metrics
  * Query: from, to, conversation_state?, message_type?, window_state?, template?, search?
@@ -729,10 +844,13 @@ app.get('/api/meta/metrics', requireWorkspaceAdmin, async (req, res) => {
           templates_sent: 0,
           active_conversations: 0,
           closed_window_conversations: 0,
+          mass_sent_messages: 0,
+          mass_send_runs: 0,
         },
         timeseries: [],
         template_stats: [],
         top_contacts: [],
+        top_mass_sends: [],
         conversation_stats: { activo: 0, pendiente: 0, resuelto: 0 },
         detail: [],
         applied_filters: {
@@ -749,7 +867,7 @@ app.get('/api/meta/metrics', requireWorkspaceAdmin, async (req, res) => {
 
     const { data: messagesData, error: messagesError } = await supabaseAdmin
       .from('whatsapp_messages')
-      .select('id, whatsapp_thread_id, message_text, incoming, read, created_at')
+      .select('id, whatsapp_thread_id, message_text, incoming, read, created_at, mass_send_id')
       .in('whatsapp_thread_id', filteredThreadIds)
       .is('deleted_at', null)
       .gte('created_at', fromIso)
@@ -854,6 +972,20 @@ app.get('/api/meta/metrics', requireWorkspaceAdmin, async (req, res) => {
       ? Number(((incomingMessages.length / outgoingMessages.length) * 100).toFixed(2))
       : 0;
 
+    const massSendMessageCount = outgoingMessages.filter((message) => !!message.mass_send_id).length;
+    const { data: massRuns = [] } = await supabaseAdmin
+      .from('whatsapp_mass_send_runs')
+      .select('id, sent_count, failed_count, started_at, whatsapp_mass_sends(name)')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .gte('started_at', fromIso)
+      .lte('started_at', toIso);
+
+    const topMassSends = (massRuns || [])
+      .map((run) => ({ name: run.whatsapp_mass_sends?.name || 'Sin nombre', sent: Number(run.sent_count || 0), failed: Number(run.failed_count || 0) }))
+      .sort((a, b) => b.sent - a.sent)
+      .slice(0, 5);
+
     return res.json({
       success: true,
       kpis: {
@@ -863,10 +995,13 @@ app.get('/api/meta/metrics', requireWorkspaceAdmin, async (req, res) => {
         templates_sent: templateMessages.length,
         active_conversations: conversationStats.activo,
         closed_window_conversations: filteredThreads.filter((thread) => !thread.window_open).length,
+        mass_sent_messages: massSendMessageCount,
+        mass_send_runs: (massRuns || []).length,
       },
       timeseries,
       template_stats: templateStats,
       top_contacts: topContacts,
+      top_mass_sends: topMassSends,
       conversation_stats: conversationStats,
       detail,
       applied_filters: {
@@ -877,6 +1012,373 @@ app.get('/api/meta/metrics', requireWorkspaceAdmin, async (req, res) => {
         window_state: normalizedWindowState || 'all',
         template: normalizedTemplate || null,
         search: normalizedSearch || null,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/meta/mass-sends/preview
+ * Body: { filters }
+ */
+app.post('/api/meta/mass-sends/preview', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId } = req.workspaceAdmin;
+  try {
+    const { filters = {} } = req.body || {};
+    const result = await buildMassSendCandidates({ tenantId, filters, sampleLimit: 25 });
+    return res.json({
+      success: true,
+      total_recipients: result.total,
+      sample: result.sample,
+      applied_filters: result.filters,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/meta/mass-sends
+ * Body: { name, template_id|template_name, language?, template_parameters?, filters?, mode?, schedule? }
+ */
+app.post('/api/meta/mass-sends', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId, userId } = req.workspaceAdmin;
+  const {
+    name,
+    template_id,
+    template_name,
+    language,
+    template_parameters = [],
+    filters = {},
+    mode = 'manual',
+    schedule = null,
+  } = req.body || {};
+
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  try {
+    const approvedTemplate = await resolveApprovedTemplateForTenant({ tenantId, templateId: template_id, templateName: template_name });
+    const normalizedFilters = normalizeMassSendFilters(filters);
+    const finalMode = String(mode).toLowerCase() === 'scheduled' ? 'scheduled' : 'manual';
+
+    const { data: created, error: createError } = await supabaseAdmin
+      .from('whatsapp_mass_sends')
+      .insert({
+        tenant_id: tenantId,
+        whatsapp_template_id: approvedTemplate.id,
+        name: String(name).trim(),
+        template_name: approvedTemplate.template_name,
+        language: String(language || approvedTemplate.language || 'es_LA'),
+        template_parameters: Array.isArray(template_parameters) ? template_parameters : [],
+        filters: normalizedFilters,
+        mode: finalMode,
+        status: finalMode === 'scheduled' ? 'active' : 'draft',
+        created_by: userId,
+        updated_by: userId,
+      })
+      .select()
+      .single();
+
+    if (createError || !created) return res.status(500).json({ error: createError?.message || 'Could not create mass send' });
+
+    if (finalMode === 'scheduled' && schedule?.cron_expression) {
+      await supabaseAdmin
+        .from('whatsapp_mass_send_schedules')
+        .insert({
+          mass_send_id: created.id,
+          cron_expression: String(schedule.cron_expression),
+          timezone: String(schedule.timezone || 'America/Bogota'),
+          next_run_at: schedule.next_run_at || null,
+          enabled: schedule.enabled !== false,
+          created_by: userId,
+          updated_by: userId,
+        });
+    }
+
+    return res.status(201).json({ success: true, mass_send: created });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/meta/mass-sends', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId } = req.workspaceAdmin;
+  try {
+    const { data: massSends = [], error } = await supabaseAdmin
+      .from('whatsapp_mass_sends')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .order('updated_at', { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
+    const ids = massSends.map((row) => row.id);
+    let runs = [];
+    if (ids.length > 0) {
+      const { data } = await supabaseAdmin
+        .from('whatsapp_mass_send_runs')
+        .select('*')
+        .in('mass_send_id', ids)
+        .is('deleted_at', null)
+        .order('started_at', { ascending: false });
+      runs = data || [];
+    }
+
+    const runByMassSend = new Map();
+    for (const run of runs) {
+      if (!runByMassSend.has(run.mass_send_id)) runByMassSend.set(run.mass_send_id, run);
+    }
+
+    return res.json({
+      success: true,
+      items: massSends.map((item) => ({
+        ...item,
+        last_run: runByMassSend.get(item.id) || null,
+      })),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/meta/mass-sends/:id', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId } = req.workspaceAdmin;
+  const { id } = req.params;
+  try {
+    const { data: massSend, error } = await supabaseAdmin
+      .from('whatsapp_mass_sends')
+      .select('*')
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (error || !massSend) return res.status(404).json({ error: 'Mass send not found' });
+
+    const { data: schedules = [] } = await supabaseAdmin
+      .from('whatsapp_mass_send_schedules')
+      .select('*')
+      .eq('mass_send_id', id)
+      .is('deleted_at', null);
+
+    const { data: runs = [] } = await supabaseAdmin
+      .from('whatsapp_mass_send_runs')
+      .select('*')
+      .eq('mass_send_id', id)
+      .is('deleted_at', null)
+      .order('started_at', { ascending: false })
+      .limit(20);
+
+    return res.json({ success: true, mass_send: massSend, schedules, runs });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId, userId } = req.workspaceAdmin;
+  const { id } = req.params;
+  const triggerType = String(req.body?.trigger_type || 'manual').toLowerCase() === 'scheduled' ? 'scheduled' : 'manual';
+
+  try {
+    const { data: massSend, error: massSendError } = await supabaseAdmin
+      .from('whatsapp_mass_sends')
+      .select('*')
+      .eq('id', id)
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (massSendError || !massSend) return res.status(404).json({ error: 'Mass send not found' });
+
+    const { data: config, error: configError } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('id, phone_number_id, token')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .single();
+    if (configError || !config?.phone_number_id) {
+      return res.status(400).json({ error: 'WhatsApp not configured or phone_number_id missing' });
+    }
+
+    const candidatesResult = await buildMassSendCandidates({ tenantId, filters: massSend.filters, sampleLimit: 5000 });
+    const recipients = candidatesResult.candidates;
+
+    const { data: runRow, error: runError } = await supabaseAdmin
+      .from('whatsapp_mass_send_runs')
+      .insert({
+        mass_send_id: massSend.id,
+        tenant_id: tenantId,
+        trigger_type: triggerType,
+        status: 'running',
+        total_recipients: recipients.length,
+        started_at: new Date().toISOString(),
+        created_by: userId,
+        updated_by: userId,
+      })
+      .select()
+      .single();
+    if (runError || !runRow) return res.status(500).json({ error: runError?.message || 'Could not create run' });
+
+    let sentCount = 0;
+    let failedCount = 0;
+    let skippedCount = 0;
+
+    for (const recipient of recipients) {
+      if (!recipient.phone_number) {
+        skippedCount += 1;
+        await supabaseAdmin.from('whatsapp_mass_send_recipients').insert({
+          mass_send_id: massSend.id,
+          mass_send_run_id: runRow.id,
+          contact_id: recipient.contact_id,
+          phone_number: '',
+          template_name: massSend.template_name,
+          status: 'skipped',
+          error_message: 'Missing phone number',
+          created_by: userId,
+          updated_by: userId,
+        });
+        continue;
+      }
+
+      try {
+        const components = Array.isArray(massSend.template_parameters) && massSend.template_parameters.length > 0
+          ? [{
+            type: 'body',
+            parameters: massSend.template_parameters.map((value) => ({ type: 'text', text: String(value) })),
+          }]
+          : undefined;
+
+        const payload = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: recipient.phone_number,
+          type: 'template',
+          template: {
+            name: massSend.template_name,
+            language: { code: String(massSend.language || 'es_LA') },
+            ...(components ? { components } : {}),
+          },
+        };
+
+        const metaRes = await fetch(`https://graph.facebook.com/${META_GRAPH_VERSION}/${config.phone_number_id}/messages`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${config.token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+        const metaData = await metaRes.json();
+        if (!metaRes.ok) throw new Error(metaData.error?.message || 'Meta API Error');
+
+        const resolved = await resolveContactAndThread({
+          tenantId,
+          phoneNumber: recipient.phone_number,
+          userId,
+          seedLastMessage: `[MASIVO] ${massSend.template_name}`,
+        });
+        const resolvedThreadId = resolved.threadId;
+        const savedText = `[MASIVO] ${massSend.template_name}`;
+
+        const { data: savedMessage } = await supabaseAdmin
+          .from('whatsapp_messages')
+          .insert({
+            whatsapp_thread_id: resolvedThreadId,
+            message_text: savedText,
+            incoming: false,
+            read: false,
+            sent_at: new Date().toISOString(),
+            mass_send_id: massSend.id,
+            mass_send_run_id: runRow.id,
+            created_by: userId,
+            updated_by: userId,
+          })
+          .select()
+          .single();
+
+        const windowState = await getConversationWindowState({
+          tenantId,
+          phoneNumber: recipient.phone_number,
+          explicitThreadId: resolvedThreadId || null,
+        });
+
+        await supabaseAdmin
+          .from('whatsapp_threads')
+          .update({
+            last_message: savedText,
+            last_interaction: new Date().toISOString(),
+            window_open: windowState.windowOpen,
+            window_expires_at: windowState.windowExpiresAt,
+            last_inbound_at: windowState.lastInboundAt,
+            updated_by: userId,
+          })
+          .eq('id', resolvedThreadId);
+
+        await supabaseAdmin
+          .from('whatsapp_mass_send_recipients')
+          .insert({
+            mass_send_id: massSend.id,
+            mass_send_run_id: runRow.id,
+            contact_id: resolved.contactId,
+            phone_number: recipient.phone_number,
+            template_name: massSend.template_name,
+            status: 'sent',
+            meta_message_id: metaData?.messages?.[0]?.id || null,
+            whatsapp_thread_id: resolvedThreadId,
+            whatsapp_message_id: savedMessage?.id || null,
+            sent_at: new Date().toISOString(),
+            created_by: userId,
+            updated_by: userId,
+          });
+        sentCount += 1;
+      } catch (sendErr) {
+        failedCount += 1;
+        await supabaseAdmin
+          .from('whatsapp_mass_send_recipients')
+          .insert({
+            mass_send_id: massSend.id,
+            mass_send_run_id: runRow.id,
+            contact_id: recipient.contact_id || null,
+            phone_number: recipient.phone_number,
+            template_name: massSend.template_name,
+            status: 'failed',
+            error_message: sendErr.message,
+            created_by: userId,
+            updated_by: userId,
+          });
+      }
+    }
+
+    const finalStatus = failedCount > 0 && sentCount === 0 ? 'failed' : 'completed';
+    await supabaseAdmin
+      .from('whatsapp_mass_send_runs')
+      .update({
+        status: finalStatus,
+        sent_count: sentCount,
+        failed_count: failedCount,
+        skipped_count: skippedCount,
+        finished_at: new Date().toISOString(),
+        updated_by: userId,
+      })
+      .eq('id', runRow.id);
+
+    await supabaseAdmin
+      .from('whatsapp_mass_sends')
+      .update({
+        status: massSend.mode === 'scheduled' ? 'active' : 'completed',
+        updated_by: userId,
+      })
+      .eq('id', massSend.id);
+
+    return res.json({
+      success: true,
+      run_id: runRow.id,
+      summary: {
+        total_recipients: recipients.length,
+        sent: sentCount,
+        failed: failedCount,
+        skipped: skippedCount,
       },
     });
   } catch (err) {

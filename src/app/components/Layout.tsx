@@ -1,4 +1,4 @@
-import { BarChart3, DollarSign, UserCheck, Users, Settings, MessageSquare, LogOut, Building2, CreditCard, ShieldCheck, SendHorizonal } from "lucide-react";
+import { BarChart3, DollarSign, UserCheck, Users, Settings, MessageSquare, LogOut, Building2, CreditCard, ShieldCheck, SendHorizonal, SendToBack } from "lucide-react";
 import { Link, useLocation } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { toast } from "sonner";
@@ -17,6 +17,7 @@ export function Layout({ children }: SidebarProps) {
     { path: "/deudas", label: "Gestión de Deudas", icon: BarChart3 },
     { path: "/mensajeria/dashboard", label: "Dashboard Mensajería", icon: SendHorizonal },
     { path: "/bandeja", label: "Bandeja", icon: MessageSquare },
+    { path: "/mensajeria/masivos", label: "Envíos Masivos", icon: SendToBack },
     { path: "/contactos", label: "Contactos", icon: UserCheck },
     { path: "/usuarios", label: "Usuarios", icon: Users },
     { path: "/configuracion", label: "Configuración", icon: Settings },

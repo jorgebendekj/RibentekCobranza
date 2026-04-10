@@ -1,11 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { whatsappService } from '../services/whatsapp.service';
-import type { MessagingMetricsFilters } from '../services/whatsapp.service';
+import type { MessagingMetricsFilters, MassSendFilters } from '../services/whatsapp.service';
 import { useAuth } from '../context/AuthContext';
 
 export const WA_CONFIG_KEY = 'whatsapp-config';
 export const WA_TEMPLATES_KEY = 'whatsapp-templates';
 export const WA_METRICS_KEY = 'whatsapp-metrics';
+export const WA_MASS_SENDS_KEY = 'whatsapp-mass-sends';
 
 export function useWhatsappConfig() {
   const { tenantId } = useAuth();
@@ -77,5 +78,43 @@ export function useMessagingMetrics(filters: MessagingMetricsFilters) {
     queryKey: [WA_METRICS_KEY, tenantId, filters],
     queryFn: () => whatsappService.getMessagingMetrics(tenantId!, filters),
     enabled: !!tenantId && !!filters.from && !!filters.to,
+  });
+}
+
+export function useMassSends() {
+  const { tenantId } = useAuth();
+  return useQuery({
+    queryKey: [WA_MASS_SENDS_KEY, tenantId],
+    queryFn: async () => (await whatsappService.getMassSends(tenantId!)).items,
+    enabled: !!tenantId,
+  });
+}
+
+export function usePreviewMassSend() {
+  const { tenantId } = useAuth();
+  return useMutation({
+    mutationFn: (filters: MassSendFilters) => whatsappService.previewMassSend(tenantId!, filters),
+  });
+}
+
+export function useCreateMassSend() {
+  const { tenantId } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: Parameters<typeof whatsappService.createMassSend>[1]) =>
+      whatsappService.createMassSend(tenantId!, payload),
+    onSuccess: () => qc.invalidateQueries({ queryKey: [WA_MASS_SENDS_KEY, tenantId] }),
+  });
+}
+
+export function useRunMassSend() {
+  const { tenantId } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (massSendId: string) => whatsappService.runMassSend(tenantId!, massSendId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [WA_MASS_SENDS_KEY, tenantId] });
+      qc.invalidateQueries({ queryKey: [WA_METRICS_KEY, tenantId] });
+    },
   });
 }
