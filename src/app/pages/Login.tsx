@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { Eye, EyeOff, DollarSign, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -12,14 +12,17 @@ import ForgotPasswordModal from "../components/ForgotPasswordModal";
 
 export default function Login() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { dbUser, isLoading: authLoading } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showForgot, setShowForgot] = useState(false);
+  const next = searchParams.get("next");
 
   // If already logged in, redirect
   if (!authLoading && dbUser) {
@@ -66,6 +69,20 @@ export default function Login() {
       setError("Error inesperado. Intenta de nuevo.");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = async () => {
+    setError(null);
+    setOauthLoading(true);
+    const redirectTo = `${window.location.origin}${next || "/cobranzas"}`;
+    const { error: oauthError } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo },
+    });
+    if (oauthError) {
+      setError(oauthError.message || "No se pudo iniciar sesión con Google");
+      setOauthLoading(false);
     }
   };
 
@@ -184,12 +201,25 @@ export default function Login() {
                 <Button
                   type="submit"
                   className="w-full h-11 text-base"
-                  disabled={isLoading}
+                  disabled={isLoading || oauthLoading}
                 >
                   {isLoading ? (
                     <><Loader2 className="size-4 mr-2 animate-spin" />Iniciando sesión...</>
                   ) : (
                     "Iniciar sesión"
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full h-11 text-base"
+                  disabled={isLoading || oauthLoading}
+                  onClick={handleGoogleSignIn}
+                >
+                  {oauthLoading ? (
+                    <><Loader2 className="size-4 mr-2 animate-spin" />Conectando con Google...</>
+                  ) : (
+                    "Continuar con Google"
                   )}
                 </Button>
               </form>

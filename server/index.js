@@ -21,6 +21,42 @@ const supabaseAdmin = createClient(
 
 const WINDOW_DURATION_MS = 24 * 60 * 60 * 1000;
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v23.0';
+const INVITE_EMAIL_WINDOW_MS = 60 * 1000;
+const INVITE_EMAIL_MAX_ATTEMPTS = 5;
+const inviteRateLimitByActor = new Map();
+
+function enforceInviteRateLimit(actorKey) {
+  const now = Date.now();
+  const existing = inviteRateLimitByActor.get(actorKey) ?? { count: 0, resetAt: now + INVITE_EMAIL_WINDOW_MS };
+  if (now > existing.resetAt) {
+    inviteRateLimitByActor.set(actorKey, { count: 1, resetAt: now + INVITE_EMAIL_WINDOW_MS });
+    return null;
+  }
+  if (existing.count >= INVITE_EMAIL_MAX_ATTEMPTS) {
+    return Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
+  }
+  inviteRateLimitByActor.set(actorKey, { ...existing, count: existing.count + 1 });
+  return null;
+}
+
+function getInviteUrl(inviteId) {
+  const appBaseUrl = process.env.APP_BASE_URL || process.env.FRONTEND_URL || 'http://localhost:5173';
+  return `${appBaseUrl}/invite?token=${inviteId}`;
+}
+
+async function sendInviteEmail(email, inviteUrl) {
+  const { error: authEmailError } = await supabaseAdmin.auth.signInWithOtp({
+    email,
+    options: {
+      shouldCreateUser: true,
+      emailRedirectTo: inviteUrl,
+    },
+  });
+  if (authEmailError) {
+    return { email_sent: false, email_error: authEmailError.message };
+  }
+  return { email_sent: true, email_error: null };
+}
 
 function computeWindowState(lastInboundAt) {
   if (!lastInboundAt) return { windowOpen: false, windowExpiresAt: null };
@@ -2096,6 +2132,26 @@ app.post('/admin/invites', requireWorkspaceAdmin, async (req, res) => {
   if (!email || !role) return res.status(400).json({ error: 'Missing required fields: email, role' });
   if (!['Admin', 'Agente'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
   const normalizedEmail = String(email).toLowerCase().trim();
+  const actorKey = `${req.workspaceAdmin.tenantId}:${req.workspaceAdmin.userId}:${req.ip ?? 'na'}`;
+  const retryAfter = enforceInviteRateLimit(actorKey);
+  if (retryAfter) return res.status(429).json({ error: `Rate limit exceeded. Retry in ${retryAfter}s` });
+
+  const { data: existingPending } = await supabaseAdmin
+    .from('tenant_invites')
+    .select('id, tenant_id, email, role, status, expires_at, created_at, updated_at')
+    .eq('tenant_id', req.workspaceAdmin.tenantId)
+    .eq('email', normalizedEmail)
+    .eq('status', 'pending')
+    .is('deleted_at', null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingPending) {
+    const inviteUrl = getInviteUrl(existingPending.id);
+    const emailResult = await sendInviteEmail(normalizedEmail, inviteUrl);
+    return res.status(200).json({ ...existingPending, invite_url: inviteUrl, ...emailResult, reused: true });
+  }
 
   const { data: invite, error } = await supabaseAdmin
     .from('tenant_invites')
@@ -2112,29 +2168,82 @@ app.post('/admin/invites', requireWorkspaceAdmin, async (req, res) => {
 
   if (error) return res.status(500).json({ error: error.message });
 
-  const appBaseUrl = process.env.APP_BASE_URL || process.env.FRONTEND_URL || 'http://localhost:5173';
-  const inviteUrl = `${appBaseUrl}/invite?token=${invite.id}`;
+  const inviteUrl = getInviteUrl(invite.id);
+  const emailResult = await sendInviteEmail(normalizedEmail, inviteUrl);
+  return res.status(201).json({ ...invite, invite_url: inviteUrl, ...emailResult });
+});
 
-  // Send the invite email through Supabase Auth (SMTP proxy).
-  // This keeps email transport inside Supabase Auth service (Brevo SMTP configured in Supabase).
-  const { error: authEmailError } = await supabaseAdmin.auth.signInWithOtp({
-    email: normalizedEmail,
-    options: {
-      shouldCreateUser: true,
-      emailRedirectTo: inviteUrl,
-    },
-  });
+/**
+ * GET /admin/invites
+ * Headers: Authorization Bearer <token>, x-tenant-id
+ * Query: status=all|pending|accepted|expired|revoked
+ */
+app.get('/admin/invites', requireWorkspaceAdmin, async (req, res) => {
+  const status = String(req.query.status || 'all');
+  const allowed = ['all', 'pending', 'accepted', 'expired', 'revoked'];
+  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status filter' });
 
-  if (authEmailError) {
-    return res.status(201).json({
-      ...invite,
-      invite_url: inviteUrl,
-      email_sent: false,
-      email_error: authEmailError.message,
-    });
-  }
+  let query = supabaseAdmin
+    .from('tenant_invites')
+    .select('id, tenant_id, email, role, status, expires_at, created_at, updated_at')
+    .eq('tenant_id', req.workspaceAdmin.tenantId)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: false });
 
-  res.status(201).json({ ...invite, invite_url: inviteUrl, email_sent: true });
+  if (status !== 'all') query = query.eq('status', status);
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ items: data ?? [] });
+});
+
+/**
+ * POST /admin/invites/:id/resend
+ * Headers: Authorization Bearer <token>, x-tenant-id
+ */
+app.post('/admin/invites/:id/resend', requireWorkspaceAdmin, async (req, res) => {
+  const inviteId = req.params.id;
+  const actorKey = `${req.workspaceAdmin.tenantId}:${req.workspaceAdmin.userId}:${req.ip ?? 'na'}`;
+  const retryAfter = enforceInviteRateLimit(actorKey);
+  if (retryAfter) return res.status(429).json({ error: `Rate limit exceeded. Retry in ${retryAfter}s` });
+
+  const { data: invite, error } = await supabaseAdmin
+    .from('tenant_invites')
+    .select('id, tenant_id, email, role, status, expires_at')
+    .eq('id', inviteId)
+    .eq('tenant_id', req.workspaceAdmin.tenantId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (error || !invite) return res.status(404).json({ error: 'Invitación no encontrada' });
+  if (invite.status !== 'pending') return res.status(400).json({ error: 'Solo se puede reenviar invitaciones pendientes' });
+
+  const inviteUrl = getInviteUrl(invite.id);
+  const emailResult = await sendInviteEmail(invite.email, inviteUrl);
+  return res.json({ success: true, invite_url: inviteUrl, ...emailResult });
+});
+
+/**
+ * DELETE /admin/invites/:id
+ * Headers: Authorization Bearer <token>, x-tenant-id
+ */
+app.delete('/admin/invites/:id', requireWorkspaceAdmin, async (req, res) => {
+  const inviteId = req.params.id;
+  const { data: invite, error: readError } = await supabaseAdmin
+    .from('tenant_invites')
+    .select('id, status')
+    .eq('id', inviteId)
+    .eq('tenant_id', req.workspaceAdmin.tenantId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (readError || !invite) return res.status(404).json({ error: 'Invitación no encontrada' });
+  if (invite.status !== 'pending') return res.status(400).json({ error: 'Solo se puede revocar invitaciones pendientes' });
+
+  const { error } = await supabaseAdmin
+    .from('tenant_invites')
+    .update({ status: 'revoked' })
+    .eq('id', inviteId)
+    .eq('tenant_id', req.workspaceAdmin.tenantId);
+  if (error) return res.status(500).json({ error: error.message });
+  return res.json({ success: true });
 });
 
 /**
@@ -2157,11 +2266,16 @@ app.get('/invites/:token', async (req, res) => {
   }
 
   const tenant = Array.isArray(invite.tenants) ? invite.tenants[0] : invite.tenants;
+  const [localPart, domainPart] = String(invite.email).split('@');
+  const safeLocal = localPart && localPart.length > 2
+    ? `${localPart[0]}***${localPart[localPart.length - 1]}`
+    : '***';
+  const maskedEmail = domainPart ? `${safeLocal}@${domainPart}` : invite.email;
   return res.json({
     token: invite.id,
     tenantId: invite.tenant_id,
     tenantName: tenant?.name ?? 'Workspace',
-    email: invite.email,
+    email: maskedEmail,
     role: invite.role,
   });
 });
@@ -2191,6 +2305,28 @@ app.post('/invites/:token/accept', async (req, res) => {
   if (new Date(invite.expires_at).getTime() < Date.now()) {
     await supabaseAdmin.from('tenant_invites').update({ status: 'expired' }).eq('id', inviteToken);
     return res.status(400).json({ error: 'Invitación expirada' });
+  }
+
+  const defaultRole = invite.role === 'Admin' ? 'Admin' : 'Agente';
+  const profileName = user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'Usuario';
+  const { data: existingProfile } = await supabaseAdmin
+    .from('users')
+    .select('id')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (!existingProfile) {
+    const { error: createProfileError } = await supabaseAdmin
+      .from('users')
+      .insert({
+        id: user.id,
+        name: profileName,
+        email: user.email,
+        role: defaultRole,
+        tenant_id: invite.tenant_id,
+        enabled: true,
+      });
+    if (createProfileError) return res.status(500).json({ error: createProfileError.message });
   }
 
   const { error: memberError } = await supabaseAdmin

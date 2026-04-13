@@ -484,12 +484,12 @@ export function Bandeja() {
       </div>
 
       {/* Main chat container */}
-      <Card className="h-[calc(100vh-140px)] min-h-[680px] overflow-hidden border-slate-200 shadow-sm">
+      <Card className="h-[calc(100vh-150px)] min-h-[640px] overflow-hidden border-slate-200 shadow-sm">
         <CardContent className="p-0 h-full">
           <div className="flex h-full">
 
             {/* ── LEFT SIDEBAR ─────────────────────────────────── */}
-            <div className="w-[270px] lg:w-[290px] xl:w-[310px] shrink-0 border-r border-slate-100 flex flex-col bg-white">
+            <div className="w-[278px] lg:w-[300px] xl:w-[322px] shrink-0 border-r border-slate-100 flex flex-col bg-white">
 
               {/* Search bar */}
               <div className="p-3 border-b border-slate-100">
@@ -635,17 +635,17 @@ export function Bandeja() {
                       </div>
                       <div>
                         <h2 className="font-semibold text-slate-900 leading-tight">{activeContactName}</h2>
-                        <div className="flex items-center gap-1.5 mt-0.5">
+                        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1">
                           <Phone className="size-3 text-slate-400" />
-                          <span className="text-xs text-slate-500">{activePhone}</span>
+                          <span className="text-xs leading-none text-slate-500">{activePhone}</span>
                           {selectedThread && (
-                            <span className="text-slate-300">·</span>
+                            <span className="text-slate-300 leading-none">·</span>
                           )}
                           {selectedThread && estadoBadge(getEstado(selectedThread))}
                           {isActive && (
                             <Badge
                               variant="outline"
-                              className={`text-[10px] font-medium ${
+                              className={`inline-flex items-center h-5 text-[10px] leading-none font-medium ${
                                 isWindowOpen
                                   ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                                   : "bg-amber-50 text-amber-700 border-amber-200"
@@ -655,7 +655,10 @@ export function Bandeja() {
                             </Badge>
                           )}
                           {hasMassSendOrigin ? (
-                            <Badge variant="outline" className="text-[10px] font-medium bg-violet-50 text-violet-700 border-violet-200">
+                            <Badge
+                              variant="outline"
+                              className="inline-flex items-center h-5 text-[10px] leading-none font-medium bg-violet-50 text-violet-700 border-violet-200"
+                            >
                               Origen: envío masivo
                             </Badge>
                           ) : null}
@@ -674,8 +677,8 @@ export function Bandeja() {
 
                   {/* Messages area */}
                   <div className="flex-1 overflow-y-auto px-6 py-5 space-y-3.5">
-                    <div className="sticky top-0 z-10 -mt-5 mb-4 bg-[#f7f8fc]/90 backdrop-blur-sm pt-5">
-                      <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-500">
+                    <div className="sticky top-0 z-10 -mt-5 mb-3 bg-[#f7f8fc]/90 backdrop-blur-sm pt-5">
+                      <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-[10px] font-medium text-slate-500">
                         Conversación
                       </div>
                     </div>
@@ -746,7 +749,7 @@ export function Bandeja() {
 
                   {/* Message input */}
                   <div className="bg-white border-t border-slate-100 p-3 shrink-0">
-                    <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
                       Respuesta
                     </p>
                     <SendComposer

@@ -1,5 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { adminTenantsService, adminUsersService, adminSubscriptionsService, adminUsersReadService } from '../services/admin.service';
+import {
+  adminTenantsService,
+  adminUsersService,
+  adminSubscriptionsService,
+  adminUsersReadService,
+  adminInvitesService,
+  type InviteRole,
+  type InviteStatus,
+} from '../services/admin.service';
+import { useAuth } from '../context/AuthContext';
 import { toast } from 'sonner';
 
 // ── Tenants ───────────────────────────────────────────────────
@@ -84,6 +93,69 @@ export function useToggleSubscription() {
   return useMutation({
     mutationFn: adminSubscriptionsService.toggle,
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin', 'subscriptions'] }); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+// ── Invites (workspace-scoped) ─────────────────────────────────
+
+const INVITES_KEY = 'tenant-invites';
+
+export function useInvites(status: 'all' | InviteStatus = 'all') {
+  const { tenantId } = useAuth();
+  return useQuery({
+    queryKey: [INVITES_KEY, tenantId, status],
+    queryFn: async () => {
+      const data = await adminInvitesService.list(tenantId!, status);
+      return data.items ?? [];
+    },
+    enabled: !!tenantId,
+  });
+}
+
+export function useCreateInvite() {
+  const { tenantId } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { email: string; role: InviteRole }) => adminInvitesService.create(tenantId!, payload),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: [INVITES_KEY, tenantId] });
+      if (data.email_sent === false) {
+        toast.warning('Invitacion creada, pero el correo no pudo enviarse.');
+      } else {
+        toast.success('Invitacion enviada correctamente.');
+      }
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useResendInvite() {
+  const { tenantId } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (inviteId: string) => adminInvitesService.resend(tenantId!, inviteId),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: [INVITES_KEY, tenantId] });
+      if (data.email_sent === false) {
+        toast.warning('Se reenvio la invitacion, pero el correo fallo.');
+      } else {
+        toast.success('Invitacion reenviada.');
+      }
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+export function useRevokeInvite() {
+  const { tenantId } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (inviteId: string) => adminInvitesService.revoke(tenantId!, inviteId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: [INVITES_KEY, tenantId] });
+      toast.success('Invitacion revocada.');
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 }

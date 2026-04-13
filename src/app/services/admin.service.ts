@@ -22,6 +22,27 @@ async function adminFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+async function adminTenantFetch<T>(tenantId: string, path: string, options?: RequestInit): Promise<T> {
+  return adminFetch<T>(path, {
+    ...options,
+    headers: { 'x-tenant-id': tenantId, ...(options?.headers ?? {}) },
+  });
+}
+
+export type InviteRole = 'Admin' | 'Agente';
+export type InviteStatus = 'pending' | 'accepted' | 'expired' | 'revoked';
+
+export interface TenantInviteItem {
+  id: string;
+  tenant_id: string;
+  email: string;
+  role: InviteRole;
+  status: InviteStatus;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // ── Tenants ───────────────────────────────────────────────────
 export const adminTenantsService = {
   getAll: () => adminFetch<any[]>('/admin/tenants'),
@@ -62,4 +83,28 @@ export const adminUsersReadService = {
     if (error) throw error;
     return data ?? [];
   },
+};
+
+// ── Invites (workspace scoped) ─────────────────────────────────
+export const adminInvitesService = {
+  list: (tenantId: string, status: 'all' | InviteStatus = 'all') => {
+    const query = new URLSearchParams();
+    if (status !== 'all') query.set('status', status);
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return adminTenantFetch<{ items: TenantInviteItem[] }>(tenantId, `/admin/invites${suffix}`);
+  },
+  create: (tenantId: string, body: { email: string; role: InviteRole }) =>
+    adminTenantFetch<TenantInviteItem & { invite_url?: string; email_sent?: boolean; email_error?: string }>(
+      tenantId,
+      '/admin/invites',
+      { method: 'POST', body: JSON.stringify(body) }
+    ),
+  resend: (tenantId: string, inviteId: string) =>
+    adminTenantFetch<{ success: boolean; invite_url?: string; email_sent?: boolean; email_error?: string }>(
+      tenantId,
+      `/admin/invites/${inviteId}/resend`,
+      { method: 'POST' }
+    ),
+  revoke: (tenantId: string, inviteId: string) =>
+    adminTenantFetch<{ success: boolean }>(tenantId, `/admin/invites/${inviteId}`, { method: 'DELETE' }),
 };
