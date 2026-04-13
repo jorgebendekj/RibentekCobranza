@@ -458,35 +458,38 @@ export function Bandeja() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <select
-          value={threadStateFilter}
-          onChange={(e) => setThreadStateFilter(e.target.value as "all" | "activo" | "pendiente" | "resuelto")}
-          className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
-        >
-          <option value="all">Estado: todos</option>
-          <option value="activo">Estado: activo</option>
-          <option value="pendiente">Estado: pendiente</option>
-          <option value="resuelto">Estado: resuelto</option>
-        </select>
-        <select
-          value={windowFilter}
-          onChange={(e) => setWindowFilter(e.target.value as "all" | "open" | "closed")}
-          className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
-        >
-          <option value="all">Ventana: todas</option>
-          <option value="open">Ventana: abierta</option>
-          <option value="closed">Ventana: cerrada</option>
-        </select>
+      <div className="rounded-xl border border-slate-200 bg-white px-3 py-2.5 shadow-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mr-1">Filtros</p>
+          <select
+            value={threadStateFilter}
+            onChange={(e) => setThreadStateFilter(e.target.value as "all" | "activo" | "pendiente" | "resuelto")}
+            className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
+          >
+            <option value="all">Estado: todos</option>
+            <option value="activo">Estado: activo</option>
+            <option value="pendiente">Estado: pendiente</option>
+            <option value="resuelto">Estado: resuelto</option>
+          </select>
+          <select
+            value={windowFilter}
+            onChange={(e) => setWindowFilter(e.target.value as "all" | "open" | "closed")}
+            className="h-9 rounded-md border border-slate-200 bg-white px-2 text-sm"
+          >
+            <option value="all">Ventana: todas</option>
+            <option value="open">Ventana: abierta</option>
+            <option value="closed">Ventana: cerrada</option>
+          </select>
+        </div>
       </div>
 
       {/* Main chat container */}
-      <Card className="h-[calc(100vh-170px)] overflow-hidden border-slate-200 shadow-sm">
+      <Card className="h-[calc(100vh-140px)] min-h-[680px] overflow-hidden border-slate-200 shadow-sm">
         <CardContent className="p-0 h-full">
           <div className="flex h-full">
 
             {/* ── LEFT SIDEBAR ─────────────────────────────────── */}
-            <div className="w-72 lg:w-80 shrink-0 border-r border-slate-100 flex flex-col bg-white">
+            <div className="w-[270px] lg:w-[290px] xl:w-[310px] shrink-0 border-r border-slate-100 flex flex-col bg-white">
 
               {/* Search bar */}
               <div className="p-3 border-b border-slate-100">
@@ -671,6 +674,11 @@ export function Bandeja() {
 
                   {/* Messages area */}
                   <div className="flex-1 overflow-y-auto px-6 py-5 space-y-3.5">
+                    <div className="sticky top-0 z-10 -mt-5 mb-4 bg-[#f7f8fc]/90 backdrop-blur-sm pt-5">
+                      <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-500">
+                        Conversación
+                      </div>
+                    </div>
                     {messagesLoading ? (
                       <div className="space-y-3">
                         {Array.from({ length: 4 }).map((_, i) => (
@@ -697,7 +705,7 @@ export function Bandeja() {
                                 <User className="size-3.5 text-slate-500" />
                               </div>
                             )}
-                            <div className={`max-w-[80%] xl:max-w-[75%] rounded-2xl px-4 py-2.5 shadow-sm ${
+                            <div className={`max-w-[85%] xl:max-w-[76%] rounded-2xl px-4 py-2.5 shadow-sm ${
                               isAgent
                                 ? "bg-blue-600 text-white rounded-br-sm"
                                 : "bg-white text-slate-900 rounded-bl-sm border border-slate-100"
@@ -738,6 +746,9 @@ export function Bandeja() {
 
                   {/* Message input */}
                   <div className="bg-white border-t border-slate-100 p-3 shrink-0">
+                    <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      Respuesta
+                    </p>
                     <SendComposer
                       activePhone={activePhone}
                       isWindowOpen={isWindowOpen}
