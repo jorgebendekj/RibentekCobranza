@@ -197,7 +197,23 @@ async function requireSuperadmin(req, res, next) {
 }
 
 // ── Health check ──────────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
+app.get('/health', (req, res) => {
+  const supabaseUrl = process.env.SUPABASE_URL || '';
+  const refMatch = supabaseUrl.match(/https:\/\/([a-z0-9-]+)\.supabase\.co/i);
+  const supabaseRef = refMatch?.[1] ?? null;
+
+  res.json({
+    status: 'ok',
+    ts: new Date().toISOString(),
+    env: {
+      supabaseRef,
+      hasSupabaseUrl: Boolean(process.env.SUPABASE_URL),
+      hasServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+      hasFrontendUrl: Boolean(process.env.FRONTEND_URL),
+      nodeEnv: process.env.NODE_ENV ?? null,
+    },
+  });
+});
 
 const AUTH_BOOTSTRAP_WINDOW_MS = 60 * 1000;
 const AUTH_BOOTSTRAP_MAX_ATTEMPTS = 20;
