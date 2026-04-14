@@ -9,6 +9,19 @@ async function getAuthHeader(): Promise<{ Authorization: string }> {
   return { Authorization: `Bearer ${session.access_token}` };
 }
 
+/** Ensure public.users row exists for the current Supabase Auth user (OAuth or password). */
+export async function bootstrapAuthProfile(): Promise<{ created: boolean }> {
+  const headers = await getAuthHeader();
+  const res = await fetch(`${ADMIN_URL}/auth/bootstrap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({}),
+  });
+  const json = await res.json().catch(() => ({ error: res.statusText }));
+  if (!res.ok) throw new Error(json.error || `Bootstrap failed (${res.status})`);
+  return json as { created: boolean };
+}
+
 async function adminFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await getAuthHeader();
   const res = await fetch(`${ADMIN_URL}${path}`, {

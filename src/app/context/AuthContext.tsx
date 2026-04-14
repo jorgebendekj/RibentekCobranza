@@ -1,7 +1,8 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { Session, User, AuthError } from '@supabase/supabase-js';
 import { supabase } from '../../lib/supabase';
 import type { DbUser, UserRole } from '../data/supabase.types';
+import { bootstrapAuthProfile } from '../services/admin.service';
 
 export interface Workspace {
   id: string;
@@ -19,6 +20,7 @@ interface AuthContextValue {
   activeRole: UserRole | null;
   tenantId: string | null;
   isLoading: boolean;
+  bootstrapError: string | null;
   signIn: (email: string, password: string) => Promise<{ error: AuthError | null }>;
   signOut: () => Promise<void>;
   switchWorkspace: (workspaceId: string) => void;
@@ -33,6 +35,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [bootstrapError, setBootstrapError] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -49,6 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setDbUser(null);
         setWorkspaces([]);
         setActiveWorkspaceId(null);
+        setBootstrapError(null);
         setIsLoading(false);
       }
     });
@@ -58,18 +62,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function loadAuthState(authUserId: string) {
     setIsLoading(true);
+    setBootstrapError(null);
     try {
-      const [{ data: profileData, error: profileError }, { data: membershipsData, error: membershipsError }] = await Promise.all([
-        supabase.from('users').select('*').eq('id', authUserId).is('deleted_at', null).maybeSingle(),
-        (supabase as any)
-          .from('tenant_members')
-          .select('tenant_id, role, enabled, tenants(id, name)')
-          .eq('user_id', authUserId)
-          .eq('enabled', true),
-      ]);
+      let profileData: DbUser | null = null;
+      let profileError: { code?: string; message?: string } | null = null;
+
+      const firstProfile = await supabase.from('users').select('*').eq('id', authUserId).is('deleted_at', null).maybeSingle();
+      profileError = firstProfile.error;
+      profileData = firstProfile.data ?? null;
 
       if (profileError) console.warn('[AuthContext] loadDbUser error:', profileError.code, profileError.message);
+
+      if (!profileData) {
+        try {
+          await bootstrapAuthProfile();
+          const second = await supabase.from('users').select('*').eq('id', authUserId).is('deleted_at', null).maybeSingle();
+          profileError = second.error;
+          profileData = second.data ?? null;
+          if (second.error) console.warn('[AuthContext] loadDbUser after bootstrap:', second.error.code, second.error.message);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : 'Bootstrap failed';
+          console.warn('[AuthContext] bootstrap error:', msg);
+          setBootstrapError(msg);
+        }
+      }
+
       setDbUser(profileData ?? null);
+
+      const { data: membershipsData, error: membershipsError } = await (supabase as any)
+        .from('tenant_members')
+        .select('tenant_id, role, enabled, tenants(id, name)')
+        .eq('user_id', authUserId)
+        .eq('enabled', true);
 
       if (membershipsError) {
         console.warn('[AuthContext] load memberships error:', membershipsError.code, membershipsError.message);
@@ -118,6 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setWorkspaces([]);
     setActiveWorkspaceId(null);
     setSession(null);
+    setBootstrapError(null);
     window.localStorage.removeItem(ACTIVE_WORKSPACE_STORAGE_KEY);
   }
 
@@ -132,6 +157,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     activeRole,
     tenantId: activeWorkspaceId,
     isLoading,
+    bootstrapError,
     signIn,
     signOut,
     switchWorkspace,

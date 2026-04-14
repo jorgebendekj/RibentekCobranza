@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { Eye, EyeOff, DollarSign, AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "../components/ui/button";
@@ -13,7 +13,7 @@ import ForgotPasswordModal from "../components/ForgotPasswordModal";
 export default function Login() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { dbUser, isLoading: authLoading } = useAuth();
+  const { session, dbUser, isLoading: authLoading, bootstrapError, signOut } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -25,10 +25,54 @@ export default function Login() {
   const next = searchParams.get("next");
 
   // If already logged in, redirect
-  if (!authLoading && dbUser) {
-    const dest = dbUser.role === "Superadmin" ? "/admin/tenants" : "/cobranzas";
+  if (!authLoading && session && dbUser) {
+    if (!dbUser.enabled) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-8">
+          <Card className="max-w-md w-full border-slate-200">
+            <CardHeader>
+              <CardTitle>Acceso desactivado</CardTitle>
+              <CardDescription>Tu usuario existe pero está deshabilitado en el sistema.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Button className="w-full" variant="outline" onClick={() => signOut()}>Cerrar sesión</Button>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+    const dest = dbUser.role === "Superadmin" ? "/admin/tenants" : (next && next.startsWith("/") ? next : "/cobranzas");
     navigate(dest, { replace: true });
     return null;
+  }
+
+  if (!authLoading && session && !dbUser) {
+    if (bootstrapError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-8">
+          <Card className="max-w-md w-full border-red-200">
+            <CardHeader>
+              <CardTitle>No se pudo preparar tu cuenta</CardTitle>
+              <CardDescription>{bootstrapError}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-slate-600">
+                Verifica que el servidor admin esté desplegado y que <span className="font-mono text-xs">VITE_ADMIN_SERVER_URL</span> apunte al backend correcto.
+              </p>
+              <Button className="w-full" variant="outline" onClick={() => signOut()}>Cerrar sesión</Button>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-8">
+        <div className="flex items-center gap-3 text-slate-600">
+          <Loader2 className="size-6 animate-spin text-blue-600" />
+          <p className="text-sm">Preparando tu cuenta…</p>
+        </div>
+      </div>
+    );
   }
 
   const validate = () => {
@@ -39,7 +83,7 @@ export default function Login() {
     return null;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
 

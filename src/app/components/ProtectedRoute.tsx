@@ -12,6 +12,7 @@ export default function ProtectedRoute({ children, requiredRole }: Props) {
 
   if (isLoading) return <div className="p-8 text-center">Cargando...</div>;
   if (!session) return <Navigate to="/login" replace />;
+  if (session && !dbUser) return <div className="p-8 text-center">Preparando tu cuenta…</div>;
   if (dbUser && !dbUser.enabled) return <Navigate to="/login" replace />;
 
   const ROLE_HIERARCHY: Record<UserRole, number> = { Superadmin: 3, Admin: 2, Agente: 1 };

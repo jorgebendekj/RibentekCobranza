@@ -199,6 +199,71 @@ async function requireSuperadmin(req, res, next) {
 // ── Health check ──────────────────────────────────────────────
 app.get('/health', (req, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
+const AUTH_BOOTSTRAP_WINDOW_MS = 60 * 1000;
+const AUTH_BOOTSTRAP_MAX_ATTEMPTS = 20;
+const authBootstrapRateLimitByUser = new Map();
+
+function enforceAuthBootstrapRateLimit(userId) {
+  const now = Date.now();
+  const existing = authBootstrapRateLimitByUser.get(userId) ?? { count: 0, resetAt: now + AUTH_BOOTSTRAP_WINDOW_MS };
+  if (now > existing.resetAt) {
+    authBootstrapRateLimitByUser.set(userId, { count: 1, resetAt: now + AUTH_BOOTSTRAP_WINDOW_MS });
+    return null;
+  }
+  if (existing.count >= AUTH_BOOTSTRAP_MAX_ATTEMPTS) {
+    return Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
+  }
+  authBootstrapRateLimitByUser.set(userId, { ...existing, count: existing.count + 1 });
+  return null;
+}
+
+/**
+ * POST /auth/bootstrap
+ * Headers: Authorization Bearer <Supabase access token>
+ * Creates public.users profile if missing (OAuth/password parity).
+ */
+app.post('/auth/bootstrap', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No authorization header' });
+  const token = authHeader.split(' ')[1];
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !user) return res.status(401).json({ error: 'Invalid token' });
+
+  const retryAfter = enforceAuthBootstrapRateLimit(user.id);
+  if (retryAfter) return res.status(429).json({ error: `Rate limit exceeded. Retry in ${retryAfter}s` });
+
+  const email = (user.email ?? '').toLowerCase().trim();
+  if (!email) return res.status(400).json({ error: 'Auth user has no email' });
+
+  const { data: existing, error: readError } = await supabaseAdmin
+    .from('users')
+    .select('id')
+    .eq('id', user.id)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (readError) return res.status(500).json({ error: readError.message });
+  if (existing?.id) return res.json({ created: false });
+
+  const name =
+    user.user_metadata?.full_name
+    || user.user_metadata?.name
+    || email.split('@')[0]
+    || 'Usuario';
+
+  const { error: insertError } = await supabaseAdmin
+    .from('users')
+    .insert({
+      id: user.id,
+      name,
+      email,
+      role: 'Agente',
+      tenant_id: null,
+      enabled: true,
+    });
+  if (insertError) return res.status(500).json({ error: insertError.message });
+  return res.status(201).json({ created: true });
+});
+
 function verifyMetaSignature(req) {
   const appSecret = process.env.META_APP_SECRET;
   if (!appSecret) return false;
