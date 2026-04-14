@@ -28,7 +28,12 @@ export async function bootstrapAuthProfile(): Promise<{ created: boolean }> {
     body: JSON.stringify({}),
   });
   const json = await res.json().catch(() => ({ error: res.statusText }));
-  if (!res.ok) throw new Error(json.error || `Bootstrap failed (${res.status})`);
+  if (!res.ok) {
+    const detail = typeof (json as any)?.detail === 'string' ? (json as any).detail : null;
+    const ref = typeof (json as any)?.supabaseRef === 'string' ? (json as any).supabaseRef : null;
+    const msg = [json.error, detail, ref ? `ref=${ref}` : null].filter(Boolean).join(' — ');
+    throw new Error(msg || `Bootstrap failed (${res.status})`);
+  }
   return json as { created: boolean };
 }
 
