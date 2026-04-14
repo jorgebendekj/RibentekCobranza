@@ -3,8 +3,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { CheckCircle2, Loader2, Mail, XCircle } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { supabase } from "../../lib/supabase";
-
-const ADMIN_URL = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL ?? "http://localhost:3001";
+import { getAdminApiBase } from "../services/admin.service";
 
 type InviteState = "checking" | "invalid" | "ready" | "accepting" | "accepted";
 
@@ -24,7 +23,7 @@ export default function InvitePage() {
       return;
     }
 
-    fetch(`${ADMIN_URL}/invites/${token}`)
+    fetch(`${getAdminApiBase()}/invites/${token}`)
       .then(async (res) => {
         const payload = await res.json();
         if (!res.ok) throw new Error(payload.error ?? "Invitación inválida");
@@ -47,7 +46,7 @@ export default function InvitePage() {
       return;
     }
 
-    const res = await fetch(`${ADMIN_URL}/invites/${token}/accept`, {
+    const res = await fetch(`${getAdminApiBase()}/invites/${token}/accept`, {
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}` },
     });

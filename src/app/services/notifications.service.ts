@@ -1,12 +1,6 @@
 import { supabase } from "../../lib/supabase";
+import { getAdminApiBase } from "./admin.service";
 import type { NotificationPreference } from "../data/supabase.types";
-
-function getAdminBaseUrl() {
-  const envUrl = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL;
-  if (envUrl) return envUrl;
-  if (typeof window !== "undefined" && window.location?.origin) return window.location.origin;
-  return "http://localhost:3001";
-}
 
 export type NotificationSeverity = "info" | "warning" | "critical";
 
@@ -29,7 +23,7 @@ export const notificationsService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error("No active session");
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     const res = await fetch(`${adminUrl}/api/notifications?${params.toString()}`, {
       headers: {
@@ -46,7 +40,7 @@ export const notificationsService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error("No active session");
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
     const res = await fetch(`${adminUrl}/api/notifications/unread-count`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -62,7 +56,7 @@ export const notificationsService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error("No active session");
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
     const res = await fetch(`${adminUrl}/api/notifications/${notificationId}/read`, {
       method: "PATCH",
       headers: {
@@ -80,7 +74,7 @@ export const notificationsService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error("No active session");
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
     const res = await fetch(`${adminUrl}/api/notifications/read-all`, {
       method: "PATCH",
       headers: {
@@ -98,7 +92,7 @@ export const notificationsService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error("No active session");
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
     const res = await fetch(`${adminUrl}/api/notifications/preferences`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -117,7 +111,7 @@ export const notificationsService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error("No active session");
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
     const res = await fetch(`${adminUrl}/api/notifications/preferences`, {
       method: "PUT",
       headers: {

@@ -17,6 +17,19 @@ export default defineConfig({
     },
   },
 
+  /** Same-origin API paths as production (Vercel rewrites); default admin URL in dev is empty → proxy to backend. */
+  server: {
+    proxy: {
+      '/auth': { target: 'http://localhost:3001', changeOrigin: true },
+      '/admin': { target: 'http://localhost:3001', changeOrigin: true },
+      '/api': { target: 'http://localhost:3001', changeOrigin: true },
+      '/health': { target: 'http://localhost:3001', changeOrigin: true },
+      '/webhooks': { target: 'http://localhost:3001', changeOrigin: true },
+      '/invites': { target: 'http://localhost:3001', changeOrigin: true },
+      '/setup': { target: 'http://localhost:3001', changeOrigin: true },
+    },
+  },
+
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
 

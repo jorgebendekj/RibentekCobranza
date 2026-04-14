@@ -9,8 +9,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { toast } from "sonner";
 import { supabase } from "../../lib/supabase";
-
-const ADMIN_URL = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL ?? "http://localhost:3001";
+import { getAdminApiBase } from "../services/admin.service";
 
 type Step = "checking" | "welcome" | "form" | "done" | "already-setup";
 
@@ -39,7 +38,7 @@ export default function Setup() {
   useEffect(() => {
     const check = async () => {
       try {
-        const res = await fetch(`${ADMIN_URL}/setup/check`);
+        const res = await fetch(`${getAdminApiBase()}/setup/check`);
         if (!res.ok) throw new Error("Server unavailable");
         const { needsSetup } = await res.json();
         setStep(needsSetup ? "welcome" : "already-setup");
@@ -70,7 +69,7 @@ export default function Setup() {
 
     setIsSubmitting(true);
     try {
-      const res = await fetch(`${ADMIN_URL}/setup/init`, {
+      const res = await fetch(`${getAdminApiBase()}/setup/init`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tenantName, adminName, email, password }),

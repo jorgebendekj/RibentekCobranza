@@ -1,6 +1,16 @@
 import { supabase } from '../../lib/supabase';
 
-const ADMIN_URL = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL ?? 'http://localhost:3001';
+/** Empty string = same origin (Vercel rewrites + dev proxy). Set VITE_ADMIN_SERVER_URL if API is on another host. */
+export function getAdminApiBase(): string {
+  const raw = (import.meta as unknown as { env: Record<string, string | undefined> }).env
+    .VITE_ADMIN_SERVER_URL;
+  if (typeof raw === 'string' && raw.trim().length > 0) {
+    return raw.trim().replace(/\/$/, '');
+  }
+  return '';
+}
+
+const adminBase = () => getAdminApiBase();
 
 /** Get auth header from current Supabase session */
 async function getAuthHeader(): Promise<{ Authorization: string }> {
@@ -12,7 +22,7 @@ async function getAuthHeader(): Promise<{ Authorization: string }> {
 /** Ensure public.users row exists for the current Supabase Auth user (OAuth or password). */
 export async function bootstrapAuthProfile(): Promise<{ created: boolean }> {
   const headers = await getAuthHeader();
-  const res = await fetch(`${ADMIN_URL}/auth/bootstrap`, {
+  const res = await fetch(`${adminBase()}/auth/bootstrap`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify({}),
@@ -24,7 +34,7 @@ export async function bootstrapAuthProfile(): Promise<{ created: boolean }> {
 
 async function adminFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const headers = await getAuthHeader();
-  const res = await fetch(`${ADMIN_URL}${path}`, {
+  const res = await fetch(`${adminBase()}${path}`, {
     ...options,
     headers: { 'Content-Type': 'application/json', ...headers, ...options?.headers },
   });

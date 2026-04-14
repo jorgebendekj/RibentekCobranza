@@ -1,4 +1,5 @@
 import { supabase } from '../../lib/supabase';
+import { getAdminApiBase } from './admin.service';
 import type { Database, WhatsappConfiguration, WhatsappTemplate, Contact } from '../data/supabase.types';
 
 type TemplateInsert = Database['public']['Tables']['whatsapp_templates']['Insert'];
@@ -77,13 +78,6 @@ export interface MassSend {
   } | null;
 }
 
-function getAdminBaseUrl() {
-  const envUrl = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ADMIN_SERVER_URL;
-  if (envUrl) return envUrl;
-  if (typeof window !== 'undefined' && window.location?.origin) return window.location.origin;
-  return 'http://localhost:3001';
-}
-
 export const whatsappService = {
   // ── Configurations ──────────────────────────────────────────
 
@@ -115,7 +109,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
 
     const res = await fetch(`${adminUrl}/api/meta/configurations/upsert`, {
       method: 'POST',
@@ -176,7 +170,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
 
     const res = await fetch(`${adminUrl}/api/meta/templates/create`, {
       method: 'POST',
@@ -197,7 +191,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
 
     const res = await fetch(`${adminUrl}/api/meta/templates/sync`, {
       method: 'GET',
@@ -219,7 +213,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
 
     const res = await fetch(`${adminUrl}/api/meta/messages/send`, {
       method: 'POST',
@@ -257,7 +251,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
 
     const res = await fetch(`${adminUrl}/api/meta/messages/send-template`, {
       method: 'POST',
@@ -277,7 +271,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
 
     const params = new URLSearchParams({
       from: filters.from,
@@ -320,7 +314,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
     const res = await fetch(`${adminUrl}/api/meta/mass-sends/preview`, {
       method: 'POST',
       headers: {
@@ -356,7 +350,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
     const res = await fetch(`${adminUrl}/api/meta/mass-sends`, {
       method: 'POST',
       headers: {
@@ -375,7 +369,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
     const res = await fetch(`${adminUrl}/api/meta/mass-sends/${massSendId}/run`, {
       method: 'POST',
       headers: {
@@ -399,7 +393,7 @@ export const whatsappService = {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
-    const adminUrl = getAdminBaseUrl();
+    const adminUrl = getAdminApiBase();
     const res = await fetch(`${adminUrl}/api/meta/mass-sends`, {
       method: 'GET',
       headers: {

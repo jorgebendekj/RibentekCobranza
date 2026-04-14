@@ -57,7 +57,8 @@ export default function Login() {
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-slate-600">
-                Verifica que el servidor admin esté desplegado y que <span className="font-mono text-xs">VITE_ADMIN_SERVER_URL</span> apunte al backend correcto.
+                Si el frontend y el API van en el mismo dominio (por ejemplo Vercel), no hace falta configurar nada: vuelve a intentar o recarga. Si el API está en otro host, define{" "}
+                <span className="font-mono text-xs">VITE_ADMIN_SERVER_URL</span> con esa URL y vuelve a desplegar.
               </p>
               <Button className="w-full" variant="outline" onClick={() => signOut()}>Cerrar sesión</Button>
             </CardContent>
