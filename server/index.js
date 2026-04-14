@@ -243,7 +243,16 @@ app.post('/auth/bootstrap', async (req, res) => {
   if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No authorization header' });
   const token = authHeader.split(' ')[1];
   const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !user) return res.status(401).json({ error: 'Invalid token' });
+  if (error || !user) {
+    const supabaseUrl = process.env.SUPABASE_URL || '';
+    const refMatch = supabaseUrl.match(/https:\/\/([a-z0-9-]+)\.supabase\.co/i);
+    const supabaseRef = refMatch?.[1] ?? null;
+    return res.status(401).json({
+      error: 'Invalid token',
+      detail: error?.message ?? null,
+      supabaseRef,
+    });
+  }
 
   const retryAfter = enforceAuthBootstrapRateLimit(user.id);
   if (retryAfter) return res.status(429).json({ error: `Rate limit exceeded. Retry in ${retryAfter}s` });
