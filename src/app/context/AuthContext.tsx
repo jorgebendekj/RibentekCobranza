@@ -64,6 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function loadAuthState(authUserId: string) {
     setIsLoading(true);
     setBootstrapError(null);
+    let bootstrapFailed = false;
     try {
       let profileData: DbUser | null = null;
       let profileError: { code?: string; message?: string } | null = null;
@@ -84,8 +85,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           const msg = e instanceof Error ? e.message : 'Bootstrap failed';
           console.warn('[AuthContext] bootstrap error:', msg);
+          bootstrapFailed = true;
           setBootstrapError(msg);
         }
+      }
+
+      // Avoid infinite "Preparando tu cuenta..." when bootstrap doesn't create/read profile.
+      if (!profileData && !bootstrapFailed) {
+        setBootstrapError('No se pudo cargar tu perfil de aplicación. Contacta al administrador.');
       }
 
       setDbUser(profileData ?? null);
