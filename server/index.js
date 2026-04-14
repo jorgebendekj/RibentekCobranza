@@ -2188,7 +2188,8 @@ app.post('/setup/init', async (req, res) => {
 
   if (tenantError) return res.status(500).json({ error: `Error creando tenant: ${tenantError.message}` });
 
-  // 2. Create auth user
+  // 2. Create auth user (or reuse existing)
+  let authUserId = null;
   const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
     email,
     password,
@@ -2196,30 +2197,49 @@ app.post('/setup/init', async (req, res) => {
   });
 
   if (authError) {
-    // Rollback tenant
-    await supabaseAdmin.from('tenants').delete().eq('id', tenant.id);
-    return res.status(400).json({ error: `Error creando usuario: ${authError.message}` });
+    // If email already exists in Auth, reuse it for bootstrap setup.
+    if ((authError.message || '').toLowerCase().includes('already been registered')) {
+      const { data: listData, error: listError } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+      if (listError) {
+        await supabaseAdmin.from('tenants').delete().eq('id', tenant.id);
+        return res.status(400).json({ error: `Error buscando usuario existente: ${listError.message}` });
+      }
+      const existing = (listData?.users ?? []).find((u) => (u.email ?? '').toLowerCase() === String(email).toLowerCase());
+      if (!existing?.id) {
+        await supabaseAdmin.from('tenants').delete().eq('id', tenant.id);
+        return res.status(400).json({ error: 'El email ya existe en Auth, pero no se pudo resolver el usuario.' });
+      }
+      authUserId = existing.id;
+      // Ensure password is updated so they can log in.
+      await supabaseAdmin.auth.admin.updateUserById(authUserId, { password, email_confirm: true });
+    } else {
+      // Rollback tenant
+      await supabaseAdmin.from('tenants').delete().eq('id', tenant.id);
+      return res.status(400).json({ error: `Error creando usuario: ${authError.message}` });
+    }
+  } else {
+    authUserId = authData.user.id;
   }
 
   // 3. Create user profile as Superadmin
   const { data: profile, error: profileError } = await supabaseAdmin
     .from('users')
     .insert({
-      id: authData.user.id,
+      id: authUserId,
       name: adminName,
       email,
       role: 'Superadmin',
       tenant_id: tenant.id,
       enabled: true,
-      created_by: authData.user.id,
-      updated_by: authData.user.id,
+      created_by: authUserId,
+      updated_by: authUserId,
     })
     .select()
     .single();
 
   if (profileError) {
     // Rollback both
-    await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+    await supabaseAdmin.auth.admin.deleteUser(authUserId);
     await supabaseAdmin.from('tenants').delete().eq('id', tenant.id);
     return res.status(500).json({ error: `Error creando perfil: ${profileError.message}` });
   }
@@ -2229,7 +2249,7 @@ app.post('/setup/init', async (req, res) => {
     .from('tenant_members')
     .insert({
       tenant_id: tenant.id,
-      user_id: authData.user.id,
+      user_id: authUserId,
       role: 'Superadmin',
       enabled: true,
     });
