@@ -13,7 +13,7 @@ import ForgotPasswordModal from "../components/ForgotPasswordModal";
 export default function Login() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { session, dbUser, isLoading: authLoading, bootstrapError, signOut } = useAuth();
+  const { session, dbUser, isLoading: authLoading, bootstrapError, hasWorkspaceAccess, signOut } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -26,6 +26,25 @@ export default function Login() {
 
   // If already logged in, redirect
   if (!authLoading && session && dbUser) {
+    if (dbUser.role !== "Superadmin" && !hasWorkspaceAccess) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-8">
+          <Card className="max-w-md w-full border-amber-200">
+            <CardHeader>
+              <CardTitle>Cuenta sin workspace asignado</CardTitle>
+              <CardDescription>Tu sesión está activa, pero no tienes una membresía de workspace habilitada.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-slate-600">
+                Pide a un administrador que te invite a un workspace o reactive tu membresía.
+              </p>
+              <Button className="w-full" variant="outline" onClick={() => signOut()}>Cerrar sesión</Button>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+
     if (!dbUser.enabled) {
       return (
         <div className="min-h-screen flex items-center justify-center bg-slate-50 p-8">

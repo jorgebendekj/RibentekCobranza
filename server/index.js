@@ -1919,7 +1919,8 @@ app.post('/admin/users', requireSuperadmin, async (req, res) => {
 
   if (authError) return res.status(400).json({ error: authError.message });
 
-  // 2. Insert profile
+  // 2. Insert global profile (users).
+  // tenant_id is kept as legacy/default-workspace compatibility; authorization uses tenant_members.
   const { data: profile, error: profileError } = await supabaseAdmin
     .from('users')
     .insert({
@@ -1941,7 +1942,25 @@ app.post('/admin/users', requireSuperadmin, async (req, res) => {
     return res.status(500).json({ error: profileError.message });
   }
 
-  res.status(201).json(profile);
+  // 3. Insert tenant membership (source of truth for tenant permissions)
+  const { error: membershipError } = await supabaseAdmin
+    .from('tenant_members')
+    .insert({
+      tenant_id,
+      user_id: authData.user.id,
+      role,
+      enabled: true,
+      created_by: req.adminUser.id,
+      updated_by: req.adminUser.id,
+    });
+
+  if (membershipError) {
+    await supabaseAdmin.from('users').delete().eq('id', authData.user.id);
+    await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+    return res.status(500).json({ error: membershipError.message });
+  }
+
+  res.status(201).json({ ...profile, tenant_membership_created: true });
 });
 
 /**
@@ -1958,6 +1977,13 @@ app.delete('/admin/users/:id', requireSuperadmin, async (req, res) => {
     .eq('id', id);
 
   if (profileError) return res.status(500).json({ error: profileError.message });
+
+  const { error: membershipError } = await supabaseAdmin
+    .from('tenant_members')
+    .update({ deleted_at: now, enabled: false, deleted_by: req.adminUser.id })
+    .eq('user_id', id)
+    .is('deleted_at', null);
+  if (membershipError) return res.status(500).json({ error: membershipError.message });
 
   await supabaseAdmin.auth.admin.updateUserById(id, { ban_duration: '87600h' }); // ~10 years
 
@@ -2321,6 +2347,7 @@ app.get('/invites/:token', async (req, res) => {
     .from('tenant_invites')
     .select('id, tenant_id, email, role, status, expires_at, tenants(name)')
     .eq('id', token)
+    .is('deleted_at', null)
     .maybeSingle();
 
   if (error || !invite) return res.status(404).json({ error: 'Invitación no encontrada' });
@@ -2361,6 +2388,7 @@ app.post('/invites/:token/accept', async (req, res) => {
     .from('tenant_invites')
     .select('*')
     .eq('id', inviteToken)
+    .is('deleted_at', null)
     .maybeSingle();
   if (inviteError || !invite) return res.status(404).json({ error: 'Invitación no encontrada' });
   if (invite.status !== 'pending') return res.status(400).json({ error: 'Invitación ya utilizada o expirada' });
@@ -2378,6 +2406,7 @@ app.post('/invites/:token/accept', async (req, res) => {
     .from('users')
     .select('id')
     .eq('id', user.id)
+    .is('deleted_at', null)
     .maybeSingle();
 
   if (!existingProfile) {
@@ -2388,7 +2417,7 @@ app.post('/invites/:token/accept', async (req, res) => {
         name: profileName,
         email: user.email,
         role: defaultRole,
-        tenant_id: invite.tenant_id,
+        tenant_id: null,
         enabled: true,
       });
     if (createProfileError) return res.status(500).json({ error: createProfileError.message });
@@ -2404,7 +2433,12 @@ app.post('/invites/:token/accept', async (req, res) => {
     }, { onConflict: 'tenant_id,user_id' });
   if (memberError) return res.status(500).json({ error: memberError.message });
 
-  await supabaseAdmin.from('tenant_invites').update({ status: 'accepted' }).eq('id', inviteToken);
+  const { error: markAcceptedError } = await supabaseAdmin
+    .from('tenant_invites')
+    .update({ status: 'accepted' })
+    .eq('id', inviteToken)
+    .eq('status', 'pending');
+  if (markAcceptedError) return res.status(500).json({ error: markAcceptedError.message });
   return res.json({ success: true, tenant_id: invite.tenant_id, role: invite.role });
 });
 

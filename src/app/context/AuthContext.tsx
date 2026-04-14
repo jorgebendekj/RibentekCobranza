@@ -19,6 +19,7 @@ interface AuthContextValue {
   activeWorkspaceId: string | null;
   activeRole: UserRole | null;
   tenantId: string | null;
+  hasWorkspaceAccess: boolean;
   isLoading: boolean;
   bootstrapError: string | null;
   signIn: (email: string, password: string) => Promise<{ error: AuthError | null }>;
@@ -147,6 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const activeRole = workspaces.find((w) => w.id === activeWorkspaceId)?.role ?? null;
+  const hasWorkspaceAccess = workspaces.length > 0;
 
   const value: AuthContextValue = {
     session,
@@ -156,6 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     activeWorkspaceId,
     activeRole,
     tenantId: activeWorkspaceId,
+    hasWorkspaceAccess,
     isLoading,
     bootstrapError,
     signIn,

@@ -33,8 +33,8 @@ export const router = createBrowserRouter([
   { path: "/contactos", element: <ProtectedRoute><Layout><Contactos /></Layout></ProtectedRoute> },
   { path: "/usuarios", element: <ProtectedRoute requiredRole="Admin"><Layout><Usuarios /></Layout></ProtectedRoute> },
   { path: "/configuracion", element: <ProtectedRoute requiredRole="Admin"><Layout><Configuracion /></Layout></ProtectedRoute> },
-  { path: "/admin/tenants", element: <ProtectedRoute requiredRole="Superadmin"><Layout><AdminTenants /></Layout></ProtectedRoute> },
-  { path: "/admin/accesos", element: <ProtectedRoute requiredRole="Superadmin"><Layout><AdminAccesos /></Layout></ProtectedRoute> },
-  { path: "/admin/suscripciones", element: <ProtectedRoute requiredRole="Superadmin"><Layout><AdminSuscripciones /></Layout></ProtectedRoute> },
+  { path: "/admin/tenants", element: <ProtectedRoute requiredRole="Superadmin" roleScope="global"><Layout><AdminTenants /></Layout></ProtectedRoute> },
+  { path: "/admin/accesos", element: <ProtectedRoute requiredRole="Superadmin" roleScope="global"><Layout><AdminAccesos /></Layout></ProtectedRoute> },
+  { path: "/admin/suscripciones", element: <ProtectedRoute requiredRole="Superadmin" roleScope="global"><Layout><AdminSuscripciones /></Layout></ProtectedRoute> },
   { path: "*", element: <Navigate to="/cobranzas" replace /> },
 ]);
