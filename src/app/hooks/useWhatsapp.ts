@@ -41,7 +41,7 @@ export function useTemplates() {
     queryKey: [WA_TEMPLATES_KEY, tenantId],
     queryFn: async () => {
       // Keep Meta and local DB in sync before showing the template list.
-      await whatsappService.syncMetaTemplates(tenantId!).catch(() => null);
+      await whatsappService.syncMetaTemplates(tenantId!, 'pending').catch(() => null);
       return whatsappService.getTemplates(tenantId!);
     },
     enabled: !!tenantId,
@@ -56,6 +56,7 @@ export function useCreateMetaTemplate() {
       name: string;
       language: string;
       category: string;
+      template_type?: 'STANDARD' | 'CAROUSEL' | 'FLOW';
       components: Array<Record<string, unknown>>;
       args?: string[];
     }) => whatsappService.createMetaTemplate(tenantId!, payload),
@@ -63,11 +64,24 @@ export function useCreateMetaTemplate() {
   });
 }
 
+export function useValidateMetaTemplate() {
+  const { tenantId } = useAuth();
+  return useMutation({
+    mutationFn: (payload: {
+      name: string;
+      language?: string;
+      category: string;
+      template_type?: 'STANDARD' | 'CAROUSEL' | 'FLOW';
+      components: Array<Record<string, unknown>>;
+    }) => whatsappService.validateMetaTemplate(tenantId!, payload),
+  });
+}
+
 export function useSyncMetaTemplates() {
   const { tenantId } = useAuth();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => whatsappService.syncMetaTemplates(tenantId!),
+    mutationFn: (mode: 'pending' | 'all' = 'pending') => whatsappService.syncMetaTemplates(tenantId!, mode),
     onSuccess: () => qc.invalidateQueries({ queryKey: [WA_TEMPLATES_KEY, tenantId] }),
   });
 }

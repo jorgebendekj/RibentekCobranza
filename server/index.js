@@ -2796,7 +2796,7 @@ app.post('/api/meta/configurations/upsert', requireWorkspaceAdmin, async (req, r
  */
 app.post('/api/meta/templates/create', requireWorkspaceAdmin, async (req, res) => {
   const { tenantId, userId } = req.workspaceAdmin;
-  const { name, language, category, components, args } = req.body || {};
+  const { name, language, category, components, args, template_type } = req.body || {};
 
   if (!name || !category || !Array.isArray(components) || components.length === 0) {
     return res.status(400).json({
@@ -2805,6 +2805,53 @@ app.post('/api/meta/templates/create', requireWorkspaceAdmin, async (req, res) =
   }
 
   try {
+    const TEMPLATE_TYPES = new Set(['STANDARD', 'CAROUSEL', 'FLOW']);
+    const normalizedTemplateType = String(template_type || 'STANDARD').toUpperCase();
+    if (!TEMPLATE_TYPES.has(normalizedTemplateType)) {
+      return res.status(400).json({ error: 'Invalid template_type', detail: 'Use STANDARD, CAROUSEL, or FLOW' });
+    }
+
+    const normalizedCategory = String(category).trim().toUpperCase();
+    if (!['MARKETING', 'UTILITY', 'AUTHENTICATION'].includes(normalizedCategory)) {
+      return res.status(400).json({ error: 'Invalid category', detail: 'Use MARKETING, UTILITY, or AUTHENTICATION' });
+    }
+
+    // Basic components validation by type (Meta API will still validate in depth).
+    const comps = components;
+    const getComp = (type) => comps.find((c) => String(c?.type || '').toUpperCase() === type);
+    const header = getComp('HEADER');
+    const body = getComp('BODY');
+    const buttons = getComp('BUTTONS');
+    const carousel = getComp('CAROUSEL');
+
+    if (!body || typeof body.text !== 'string' || body.text.trim().length === 0) {
+      return res.status(400).json({ error: 'Invalid components', detail: 'BODY.text is required' });
+    }
+
+    if (normalizedTemplateType === 'STANDARD') {
+      if (carousel) return res.status(400).json({ error: 'Invalid components', detail: 'STANDARD cannot include CAROUSEL' });
+      if (buttons && !Array.isArray(buttons.buttons)) {
+        return res.status(400).json({ error: 'Invalid components', detail: 'BUTTONS.buttons must be an array' });
+      }
+    }
+
+    if (normalizedTemplateType === 'FLOW') {
+      if (!buttons || !Array.isArray(buttons.buttons) || buttons.buttons.length === 0) {
+        return res.status(400).json({ error: 'Invalid components', detail: 'FLOW templates require BUTTONS.buttons[]' });
+      }
+      const hasFlow = buttons.buttons.some((b) => String(b?.type || '').toUpperCase() === 'FLOW');
+      if (!hasFlow) {
+        return res.status(400).json({ error: 'Invalid components', detail: 'FLOW templates require at least one FLOW button' });
+      }
+    }
+
+    if (normalizedTemplateType === 'CAROUSEL') {
+      if (!carousel) {
+        return res.status(400).json({ error: 'Invalid components', detail: 'CAROUSEL templates require a CAROUSEL component' });
+      }
+      // Keep validation light: Meta will enforce card constraints.
+    }
+
     // 1. Get configurations for this tenant
     const { data: config, error: configError } = await supabaseAdmin
       .from('whatsapp_configurations')
@@ -2821,8 +2868,8 @@ app.post('/api/meta/templates/create', requireWorkspaceAdmin, async (req, res) =
     const payload = {
       name: normalizedName,
       language: language || config.default_template_language || 'es_LA',
-      category,
-      components,
+      category: normalizedCategory,
+      components: comps,
     };
 
     // 3. Send to Meta API
@@ -2839,9 +2886,25 @@ app.post('/api/meta/templates/create', requireWorkspaceAdmin, async (req, res) =
     if (!metaRes.ok) {
       return res.status(metaRes.status).json({
         error: metaData.error?.message || 'Meta API Error',
-        details: metaData.error,
+        details: metaData.error || null,
+        meta: {
+          type: metaData.error?.type || null,
+          code: metaData.error?.code || null,
+          error_subcode: metaData.error?.error_subcode || null,
+          fbtrace_id: metaData.error?.fbtrace_id || null,
+        },
       });
     }
+
+    const normalizedHeaderFormat = (() => {
+      if (!header) return 'NONE';
+      const fmt = String(header.format || '').toUpperCase();
+      if (fmt === 'TEXT') return 'TEXT';
+      if (fmt === 'IMAGE') return 'IMAGE';
+      if (fmt === 'VIDEO') return 'VIDEO';
+      if (fmt === 'DOCUMENT') return 'DOCUMENT';
+      return 'NONE';
+    })();
 
     // 4. Save to Supabase DB
     const { data: template, error: dbError } = await supabaseAdmin
@@ -2854,8 +2917,10 @@ app.post('/api/meta/templates/create', requireWorkspaceAdmin, async (req, res) =
         meta_status: String(metaData.status || 'PENDING').toUpperCase(),
         meta_template_id: metaData.id,
         language: payload.language,
-        category,
-        components,
+        category: normalizedCategory,
+        components: comps,
+        template_type: normalizedTemplateType,
+        header_format: normalizedHeaderFormat,
         created_by: userId,
         updated_by: userId,
       })
@@ -2865,6 +2930,100 @@ app.post('/api/meta/templates/create', requireWorkspaceAdmin, async (req, res) =
     if (dbError) return res.status(500).json({ error: dbError.message });
     return res.status(201).json(template);
 
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/meta/templates/validate
+ * Validates/normalizes a template payload without calling Meta API.
+ * Useful for wizard preview and detailed UX errors.
+ */
+app.post('/api/meta/templates/validate', requireWorkspaceAdmin, async (req, res) => {
+  const { tenantId } = req.workspaceAdmin;
+  const { name, language, category, components, template_type } = req.body || {};
+
+  if (!name || !category || !Array.isArray(components) || components.length === 0) {
+    return res.status(400).json({ error: 'Missing required fields: name, category, components[]' });
+  }
+
+  try {
+    const TEMPLATE_TYPES = new Set(['STANDARD', 'CAROUSEL', 'FLOW']);
+    const normalizedTemplateType = String(template_type || 'STANDARD').toUpperCase();
+    if (!TEMPLATE_TYPES.has(normalizedTemplateType)) {
+      return res.status(400).json({ error: 'Invalid template_type', detail: 'Use STANDARD, CAROUSEL, or FLOW' });
+    }
+
+    const normalizedCategory = String(category).trim().toUpperCase();
+    if (!['MARKETING', 'UTILITY', 'AUTHENTICATION'].includes(normalizedCategory)) {
+      return res.status(400).json({ error: 'Invalid category', detail: 'Use MARKETING, UTILITY, or AUTHENTICATION' });
+    }
+
+    const comps = components;
+    const getComp = (type) => comps.find((c) => String(c?.type || '').toUpperCase() === type);
+    const header = getComp('HEADER');
+    const body = getComp('BODY');
+    const buttons = getComp('BUTTONS');
+    const carousel = getComp('CAROUSEL');
+
+    if (!body || typeof body.text !== 'string' || body.text.trim().length === 0) {
+      return res.status(400).json({ error: 'Invalid components', detail: 'BODY.text is required' });
+    }
+
+    if (normalizedTemplateType === 'STANDARD') {
+      if (carousel) return res.status(400).json({ error: 'Invalid components', detail: 'STANDARD cannot include CAROUSEL' });
+      if (buttons && !Array.isArray(buttons.buttons)) {
+        return res.status(400).json({ error: 'Invalid components', detail: 'BUTTONS.buttons must be an array' });
+      }
+    }
+
+    if (normalizedTemplateType === 'FLOW') {
+      if (!buttons || !Array.isArray(buttons.buttons) || buttons.buttons.length === 0) {
+        return res.status(400).json({ error: 'Invalid components', detail: 'FLOW templates require BUTTONS.buttons[]' });
+      }
+      const hasFlow = buttons.buttons.some((b) => String(b?.type || '').toUpperCase() === 'FLOW');
+      if (!hasFlow) {
+        return res.status(400).json({ error: 'Invalid components', detail: 'FLOW templates require at least one FLOW button' });
+      }
+    }
+
+    if (normalizedTemplateType === 'CAROUSEL') {
+      if (!carousel) {
+        return res.status(400).json({ error: 'Invalid components', detail: 'CAROUSEL templates require a CAROUSEL component' });
+      }
+    }
+
+    const { data: config, error: configError } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('default_template_language')
+      .eq('tenant_id', tenantId)
+      .single();
+    if (configError || !config) return res.status(400).json({ error: 'WhatsApp config not found for this workspace' });
+
+    const normalizedName = String(name).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const normalizedLanguage = language || config.default_template_language || 'es_LA';
+    const normalizedHeaderFormat = (() => {
+      if (!header) return 'NONE';
+      const fmt = String(header.format || '').toUpperCase();
+      if (fmt === 'TEXT') return 'TEXT';
+      if (fmt === 'IMAGE') return 'IMAGE';
+      if (fmt === 'VIDEO') return 'VIDEO';
+      if (fmt === 'DOCUMENT') return 'DOCUMENT';
+      return 'NONE';
+    })();
+
+    return res.json({
+      success: true,
+      normalized: {
+        name: normalizedName,
+        language: normalizedLanguage,
+        category: normalizedCategory,
+        template_type: normalizedTemplateType,
+        header_format: normalizedHeaderFormat,
+        components: comps,
+      },
+    });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -2916,6 +3075,20 @@ app.get('/api/meta/templates/sync', requireWorkspaceAdmin, async (req, res) => {
       const match = metaTemplates.find((t) => t.id === local.meta_template_id || t.name === local.template_name);
       if (!match) continue;
 
+      const matchComponents = match.components || undefined;
+      const headerComp = Array.isArray(matchComponents)
+        ? matchComponents.find((c) => String(c?.type || '').toUpperCase() === 'HEADER')
+        : null;
+      const headerFormat = (() => {
+        if (!headerComp) return undefined;
+        const fmt = String(headerComp.format || '').toUpperCase();
+        if (fmt === 'TEXT') return 'TEXT';
+        if (fmt === 'IMAGE') return 'IMAGE';
+        if (fmt === 'VIDEO') return 'VIDEO';
+        if (fmt === 'DOCUMENT') return 'DOCUMENT';
+        return 'NONE';
+      })();
+
       await supabaseAdmin
         .from('whatsapp_templates')
         .update({
@@ -2923,7 +3096,10 @@ app.get('/api/meta/templates/sync', requireWorkspaceAdmin, async (req, res) => {
           meta_template_id: match.id,
           language: match.language || undefined,
           category: match.category || undefined,
-          components: match.components || undefined,
+          components: matchComponents,
+          quality_score: match.quality_score || undefined,
+          rejection_reason: match.rejected_reason || match.rejection_reason || undefined,
+          header_format: headerFormat,
         })
         .eq('id', local.id);
       syncedCount++;

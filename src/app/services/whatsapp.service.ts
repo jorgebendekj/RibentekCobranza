@@ -163,6 +163,7 @@ export const whatsappService = {
       name: string;
       language: string;
       category: string;
+      template_type?: 'STANDARD' | 'CAROUSEL' | 'FLOW';
       components: Array<Record<string, unknown>>;
       args?: string[];
     }
@@ -186,14 +187,54 @@ export const whatsappService = {
     return json as WhatsappTemplate;
   },
 
-  /** Sync Meta template statuses through backend proxy */
-  async syncMetaTemplates(tenantId: string) {
+  /** Validate/normalize Meta template through backend proxy (no remote call) */
+  async validateMetaTemplate(
+    tenantId: string,
+    payload: {
+      name: string;
+      language?: string;
+      category: string;
+      template_type?: 'STANDARD' | 'CAROUSEL' | 'FLOW';
+      components: Array<Record<string, unknown>>;
+    }
+  ) {
     const { data: sessionData } = await supabase.auth.getSession();
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) throw new Error('No active session');
     const adminUrl = getAdminApiBase();
 
-    const res = await fetch(`${adminUrl}/api/meta/templates/sync`, {
+    const res = await fetch(`${adminUrl}/api/meta/templates/validate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        'x-tenant-id': tenantId,
+      },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || json.detail || 'Error validando plantilla');
+    return json as {
+      success: boolean;
+      normalized: {
+        name: string;
+        language: string;
+        category: string;
+        template_type: string;
+        header_format: string;
+        components: Array<Record<string, unknown>>;
+      };
+    };
+  },
+
+  /** Sync Meta template statuses through backend proxy */
+  async syncMetaTemplates(tenantId: string, mode: 'pending' | 'all' = 'pending') {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) throw new Error('No active session');
+    const adminUrl = getAdminApiBase();
+
+    const res = await fetch(`${adminUrl}/api/meta/templates/sync?mode=${encodeURIComponent(mode)}`, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -202,7 +243,7 @@ export const whatsappService = {
     });
     const json = await res.json();
     if (!res.ok) throw new Error(json.error || 'Error sincronizando plantillas');
-    return json as { success: boolean; synced: number; total_remote: number; total_local: number };
+    return json as { success: boolean; synced: number; imported?: number; total_remote: number; total_local: number };
   },
 
   /** Send a free-text message to a contact via Meta proxy */
