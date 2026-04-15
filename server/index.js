@@ -1872,6 +1872,197 @@ app.post('/api/notifications/debt-threshold/check', requireWorkspaceAdmin, async
   }
 });
 
+// ════════════════════════════════════════════════════════════════
+// DEBTS — Manual create + batch import
+// ════════════════════════════════════════════════════════════════
+
+function normalizePhone(phone) {
+  if (!phone) return null;
+  const s = String(phone).trim();
+  if (!s) return null;
+  // keep + and digits
+  const cleaned = s.replace(/[^\d+]/g, '');
+  return cleaned || null;
+}
+
+async function upsertContactByIdentity({ tenantId, actorUserId, name, phone_number, email }) {
+  const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
+  const normalizedPhone = normalizePhone(phone_number);
+
+  let existing = null;
+  if (normalizedPhone) {
+    const { data } = await supabaseAdmin
+      .from('contacts')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .eq('phone_number', normalizedPhone)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (data) existing = data;
+  }
+
+  if (!existing && normalizedEmail) {
+    const { data } = await supabaseAdmin
+      .from('contacts')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .eq('email', normalizedEmail)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (data) existing = data;
+  }
+
+  if (existing?.id) return existing;
+
+  const { data: created, error } = await supabaseAdmin
+    .from('contacts')
+    .insert({
+      tenant_id: tenantId,
+      name: name || normalizedPhone || normalizedEmail || 'Contacto',
+      phone_number: normalizedPhone,
+      email: normalizedEmail,
+      created_by: actorUserId,
+      updated_by: actorUserId,
+    })
+    .select('*')
+    .single();
+  if (error) throw new Error(error.message);
+  return created;
+}
+
+async function getOrCreateDebtAggregate({ tenantId, actorUserId, contactId }) {
+  const { data: existing } = await supabaseAdmin
+    .from('debts')
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .eq('contact_id', contactId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (existing?.id) return existing.id;
+
+  const { data: created, error } = await supabaseAdmin
+    .from('debts')
+    .insert({
+      tenant_id: tenantId,
+      contact_id: contactId,
+      created_by: actorUserId,
+      updated_by: actorUserId,
+    })
+    .select('id')
+    .single();
+  if (error) throw new Error(error.message);
+  return created.id;
+}
+
+/**
+ * POST /api/debts/create
+ * Headers: Authorization Bearer <token>, x-tenant-id
+ * Body: { contactId?, contact?: { name, phone_number, email }, items: [{ amount, penalty?, total?, description?, expiration_date }] }
+ */
+app.post('/api/debts/create', requireWorkspaceAdmin, async (req, res) => {
+  try {
+    const tenantId = req.workspaceAdmin.tenantId;
+    const actorUserId = req.workspaceAdmin.userId;
+    const { contactId, contact, items } = req.body || {};
+    const firstItem = Array.isArray(items) ? items[0] : null;
+    if ((!contactId && !contact) || !firstItem) {
+      return res.status(400).json({ error: 'Missing required fields: contactId/contact and items[0]' });
+    }
+
+    const resolvedContact = contactId
+      ? (await supabaseAdmin.from('contacts').select('*').eq('id', contactId).eq('tenant_id', tenantId).is('deleted_at', null).single()).data
+      : await upsertContactByIdentity({ tenantId, actorUserId, ...contact });
+    if (!resolvedContact?.id) return res.status(400).json({ error: 'Contact not found' });
+
+    const debtId = await getOrCreateDebtAggregate({ tenantId, actorUserId, contactId: resolvedContact.id });
+
+    const inserts = items.map((it) => {
+      const amount = Number(it.amount ?? it.debt_amount ?? 0);
+      const penalty = Number(it.penalty ?? it.penalty_amount ?? 0);
+      const total = Number(it.total ?? amount + penalty);
+      return {
+        contact_id: resolvedContact.id,
+        debt_id: debtId,
+        debt_amount: amount,
+        penalty_amount: penalty,
+        total,
+        debt_description: it.description ?? it.debt_description ?? null,
+        expiration_date: it.expiration_date,
+        debt_status: 'Pending',
+        created_by: actorUserId,
+        updated_by: actorUserId,
+      };
+    });
+
+    const { data: createdItems, error } = await supabaseAdmin
+      .from('debt_details')
+      .insert(inserts)
+      .select('*');
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.status(201).json({ success: true, contact: { id: resolvedContact.id, name: resolvedContact.name }, debt_id: debtId, items: createdItems });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/debts/import
+ * Headers: Authorization Bearer <token>, x-tenant-id
+ * Body: { rows: [{ name?, phone_number?, email?, amount, penalty?, total?, description?, expiration_date }] }
+ */
+app.post('/api/debts/import', requireWorkspaceAdmin, async (req, res) => {
+  try {
+    const tenantId = req.workspaceAdmin.tenantId;
+    const actorUserId = req.workspaceAdmin.userId;
+    const { rows } = req.body || {};
+    if (!Array.isArray(rows) || rows.length === 0) return res.status(400).json({ error: 'rows[] is required' });
+
+    const results = { created_contacts: 0, created_items: 0, errors: [] };
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      try {
+        const contactRow = await upsertContactByIdentity({
+          tenantId,
+          actorUserId,
+          name: r.name ?? r.contact_name,
+          phone_number: r.phone_number ?? r.phone ?? r.telefono,
+          email: r.email,
+        });
+        if (contactRow?.id) results.created_contacts++;
+
+        const debtId = await getOrCreateDebtAggregate({ tenantId, actorUserId, contactId: contactRow.id });
+
+        const amount = Number(r.amount ?? r.debt_amount ?? 0);
+        const penalty = Number(r.penalty ?? r.penalty_amount ?? 0);
+        const total = Number(r.total ?? amount + penalty);
+
+        const { error: insertError } = await supabaseAdmin.from('debt_details').insert({
+          contact_id: contactRow.id,
+          debt_id: debtId,
+          debt_amount: amount,
+          penalty_amount: penalty,
+          total,
+          debt_description: r.description ?? r.debt_description ?? null,
+          expiration_date: r.expiration_date,
+          debt_status: 'Pending',
+          created_by: actorUserId,
+          updated_by: actorUserId,
+        });
+        if (insertError) throw new Error(insertError.message);
+        results.created_items++;
+      } catch (e) {
+        results.errors.push({ row: i + 1, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+
+    return res.json({ success: true, ...results });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 async function requireWorkspaceMember(req, res, next) {
   const authHeader = req.headers.authorization;
   const tenantId = req.headers['x-tenant-id'];

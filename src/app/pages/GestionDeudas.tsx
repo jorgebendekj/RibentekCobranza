@@ -26,6 +26,8 @@ import { useContacts } from "../hooks/useContacts";
 import type { DebtStatus } from "../data/supabase.types";
 import { DEBT_STATUS_LABELS } from "../data/supabase.types";
 import { Checkbox } from "../components/ui/checkbox";
+import { useAuth } from "../context/AuthContext";
+import { adminDebtsService } from "../services/admin.service";
 
 type VistaMode = "individual" | "agrupada";
 type MassStep = 1 | 2 | 3 | 4 | 5;
@@ -40,11 +42,23 @@ const STATUS_OPTIONS: Array<{ value: DebtStatus | "all"; label: string }> = [
 
 export function GestionDeudas() {
   const navigate = useNavigate();
+  const { tenantId } = useAuth();
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<DebtStatus | "all">("all");
   const [sortBy, setSortBy] = useState<string>("expiration_date_desc");
   const [vistaMode, setVistaMode] = useState<VistaMode>("individual");
   const [expandedClients, setExpandedClients] = useState<Set<string>>(new Set());
+  const [showNewDebt, setShowNewDebt] = useState(false);
+  const [newDebtContactId, setNewDebtContactId] = useState<string>("");
+  const [newDebtAmount, setNewDebtAmount] = useState<string>("");
+  const [newDebtPenalty, setNewDebtPenalty] = useState<string>("");
+  const [newDebtDesc, setNewDebtDesc] = useState<string>("");
+  const [newDebtExp, setNewDebtExp] = useState<string>("");
+  const [savingDebt, setSavingDebt] = useState(false);
+
+  const [showImport, setShowImport] = useState(false);
+  const [importRows, setImportRows] = useState<Array<{ name?: string; phone_number?: string; email?: string; amount: number; penalty?: number; total?: number; description?: string; expiration_date: string }>>([]);
+  const [importing, setImporting] = useState(false);
 
   // Wizard de envíos masivos
   const [showCobranzasModal, setShowCobranzasModal] = useState(false);
@@ -151,6 +165,100 @@ export function GestionDeudas() {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Deudas");
     XLSX.writeFile(wb, `Deudas_${new Date().toISOString().split("T")[0]}.xlsx`);
+  };
+
+  const openNewDebt = () => {
+    if (!tenantId) {
+      toast.error("Selecciona un workspace primero.");
+      return;
+    }
+    setNewDebtContactId("");
+    setNewDebtAmount("");
+    setNewDebtPenalty("");
+    setNewDebtDesc("");
+    setNewDebtExp(new Date().toISOString().slice(0, 10));
+    setShowNewDebt(true);
+  };
+
+  const saveNewDebt = async () => {
+    if (!tenantId) return;
+    if (!newDebtContactId) return toast.error("Selecciona un contacto.");
+    const amount = Number(newDebtAmount);
+    if (!Number.isFinite(amount) || amount <= 0) return toast.error("Monto inválido.");
+    const penalty = newDebtPenalty ? Number(newDebtPenalty) : 0;
+    if (!newDebtExp) return toast.error("Fecha de vencimiento requerida.");
+
+    setSavingDebt(true);
+    try {
+      await adminDebtsService.create(tenantId, {
+        contactId: newDebtContactId,
+        items: [{
+          amount,
+          penalty: Number.isFinite(penalty) ? penalty : 0,
+          description: newDebtDesc.trim() || undefined,
+          expiration_date: newDebtExp,
+        }],
+      });
+      toast.success("Deuda creada.");
+      setShowNewDebt(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo crear la deuda");
+    } finally {
+      setSavingDebt(false);
+    }
+  };
+
+  const openImport = () => {
+    if (!tenantId) {
+      toast.error("Selecciona un workspace primero.");
+      return;
+    }
+    setImportRows([]);
+    setShowImport(true);
+  };
+
+  const parseExcel = async (file: File) => {
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: "array" });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json<Record<string, any>>(ws, { defval: "" });
+    const mapped = rows.map((r) => {
+      const amount = Number(r.amount ?? r.monto ?? r.debt_amount ?? 0);
+      const penalty = Number(r.penalty ?? r.mora ?? r.penalty_amount ?? 0);
+      const total = Number(r.total ?? (amount + penalty));
+      const expiration_date = String(r.expiration_date ?? r.vencimiento ?? r.fecha_vencimiento ?? "").slice(0, 10);
+      return {
+        name: r.name ?? r.cliente ?? r.contact_name ?? "",
+        phone_number: r.phone_number ?? r.telefono ?? r.phone ?? "",
+        email: r.email ?? "",
+        amount,
+        penalty,
+        total,
+        description: r.description ?? r.concepto ?? r.debt_description ?? "",
+        expiration_date,
+      };
+    }).filter((r) => r.amount > 0 && r.expiration_date);
+    setImportRows(mapped);
+    toast.success(`Archivo cargado: ${mapped.length} filas válidas`);
+  };
+
+  const runImport = async () => {
+    if (!tenantId) return;
+    if (importRows.length === 0) return toast.error("No hay filas para importar.");
+    setImporting(true);
+    try {
+      const res = await adminDebtsService.import(tenantId, { rows: importRows });
+      if (res.errors?.length) {
+        toast.error(`Importado con errores: ${res.created_items} items, ${res.errors.length} fallos`);
+      } else {
+        toast.success(`Importado: ${res.created_items} items`);
+      }
+      setShowImport(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo importar");
+    } finally {
+      setImporting(false);
+    }
   };
 
   const massFilters = useMemo(() => ({
@@ -276,6 +384,15 @@ export function GestionDeudas() {
         </div>
         <Button onClick={() => setShowCobranzasModal(true)} size="lg">
           <Settings className="size-4 mr-2" />Gestionar cobranzas
+        </Button>
+      </div>
+
+      <div className="flex gap-2">
+        <Button variant="outline" onClick={openNewDebt}>
+          <DollarSign className="size-4 mr-2" />Nueva deuda
+        </Button>
+        <Button variant="outline" onClick={openImport}>
+          <Download className="size-4 mr-2" />Importar deudas (Excel)
         </Button>
       </div>
 
@@ -714,6 +831,78 @@ export function GestionDeudas() {
         selectedContactIds={includedContactIds}
         onSelectedContactIdsChange={setIncludedContactIds}
       />
+
+      <Dialog open={showNewDebt} onOpenChange={setShowNewDebt}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Nueva deuda</DialogTitle>
+            <DialogDescription>Crea una deuda manualmente para un contacto.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label>Contacto</Label>
+              <Select value={newDebtContactId} onValueChange={setNewDebtContactId}>
+                <SelectTrigger><SelectValue placeholder="Selecciona un contacto" /></SelectTrigger>
+                <SelectContent>
+                  {contacts.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>{c.name} {c.phone_number ? `(${c.phone_number})` : ""}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Monto</Label>
+                <Input value={newDebtAmount} onChange={(e) => setNewDebtAmount(e.target.value)} type="number" min={0} />
+              </div>
+              <div className="space-y-2">
+                <Label>Mora</Label>
+                <Input value={newDebtPenalty} onChange={(e) => setNewDebtPenalty(e.target.value)} type="number" min={0} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Concepto</Label>
+              <Input value={newDebtDesc} onChange={(e) => setNewDebtDesc(e.target.value)} placeholder="Descripción / concepto" />
+            </div>
+            <div className="space-y-2">
+              <Label>Vencimiento</Label>
+              <Input value={newDebtExp} onChange={(e) => setNewDebtExp(e.target.value)} type="date" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowNewDebt(false)}>Cancelar</Button>
+            <Button onClick={saveNewDebt} disabled={savingDebt}>
+              {savingDebt ? "Guardando..." : "Crear"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showImport} onOpenChange={setShowImport}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Importar deudas (Excel)</DialogTitle>
+            <DialogDescription>
+              Columnas soportadas: name/cliente, phone_number/telefono, email, amount/monto, penalty/mora, description/concepto, expiration_date/vencimiento.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input type="file" accept=".xlsx,.xls" onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) parseExcel(f).catch((err) => toast.error(String(err)));
+            }} />
+            <div className="text-sm text-slate-600">
+              Filas cargadas: <span className="font-medium">{importRows.length}</span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowImport(false)}>Cancelar</Button>
+            <Button onClick={runImport} disabled={importing || importRows.length === 0}>
+              {importing ? "Importando..." : "Importar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ContactSelectorModal
         open={showExcludeSelector}

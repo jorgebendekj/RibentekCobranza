@@ -136,3 +136,19 @@ export const adminInvitesService = {
   revoke: (tenantId: string, inviteId: string) =>
     adminTenantFetch<{ success: boolean }>(tenantId, `/admin/invites/${inviteId}`, { method: 'DELETE' }),
 };
+
+// ── Debts (tenant scoped via admin API) ───────────────────────
+export type CreateDebtItem = {
+  amount: number;
+  penalty?: number;
+  total?: number;
+  description?: string;
+  expiration_date: string; // YYYY-MM-DD
+};
+
+export const adminDebtsService = {
+  create: (tenantId: string, body: { contactId?: string; contact?: { name?: string; phone_number?: string; email?: string }; items: CreateDebtItem[] }) =>
+    adminTenantFetch<{ success: boolean; debt_id: string }>(tenantId, '/api/debts/create', { method: 'POST', body: JSON.stringify(body) }),
+  import: (tenantId: string, body: { rows: Array<{ name?: string; phone_number?: string; email?: string; amount: number; penalty?: number; total?: number; description?: string; expiration_date: string }> }) =>
+    adminTenantFetch<{ success: boolean; created_items: number; errors: Array<{ row: number; error: string }> }>(tenantId, '/api/debts/import', { method: 'POST', body: JSON.stringify(body) }),
+};
