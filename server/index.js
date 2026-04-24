@@ -67,24 +67,62 @@ function computeWindowState(lastInboundAt) {
   };
 }
 
+/** Meta Cloud API `to` field: E.164 digits only, no leading +. */
+function normalizeWhatsAppPhone(rawPhone) {
+  const raw = String(rawPhone || '').trim();
+  if (!raw) return '';
+  let digits = raw.replace(/[^\d]/g, '');
+  if (!digits) return '';
+  while (digits.startsWith('00')) digits = digits.slice(2);
+  // Bolivia: occasional bad export "591" + "0" + 8-digit mobile (12 digits)
+  if (digits.startsWith('5910') && digits.length === 12) {
+    digits = `591${digits.slice(4)}`;
+  }
+  if (digits.length < 8 || digits.length > 15) return '';
+  return digits;
+}
+
+async function findContactIdByTenantAndPhone(tenantId, rawPhone) {
+  const digits = normalizeWhatsAppPhone(rawPhone);
+  if (!digits) return null;
+  const variants = Array.from(new Set([
+    String(rawPhone || '').trim(),
+    digits,
+    `+${digits}`,
+  ].filter(Boolean)));
+  for (const v of variants) {
+    const { data } = await supabaseAdmin
+      .from('contacts')
+      .select('id')
+      .eq('tenant_id', tenantId)
+      .eq('phone_number', v)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (data?.id) return data.id;
+  }
+  const { data: rows } = await supabaseAdmin
+    .from('contacts')
+    .select('id, phone_number')
+    .eq('tenant_id', tenantId)
+    .is('deleted_at', null)
+    .limit(2000);
+  const found = (rows || []).find((r) => normalizeWhatsAppPhone(r.phone_number) === digits);
+  return found?.id || null;
+}
+
 async function resolveContactAndThread({ tenantId, phoneNumber, userId, seedLastMessage }) {
   let contactId = null;
-  const { data: existingContact } = await supabaseAdmin
-    .from('contacts')
-    .select('id')
-    .eq('tenant_id', tenantId)
-    .eq('phone_number', phoneNumber)
-    .is('deleted_at', null)
-    .maybeSingle();
+  const canonicalPhone = normalizeWhatsAppPhone(phoneNumber) || String(phoneNumber || '').trim();
+  contactId = await findContactIdByTenantAndPhone(tenantId, phoneNumber);
 
-  if (existingContact?.id) {
-    contactId = existingContact.id;
+  if (contactId) {
+    // found
   } else {
     const { data: newContact, error: contactError } = await supabaseAdmin
       .from('contacts')
       .insert({
-        name: phoneNumber,
-        phone_number: phoneNumber,
+        name: canonicalPhone,
+        phone_number: canonicalPhone,
         tenant_id: tenantId,
         created_by: userId,
         updated_by: userId,
@@ -130,11 +168,14 @@ async function getConversationWindowState({ tenantId, phoneNumber, explicitThrea
   let threadId = explicitThreadId;
 
   if (!threadId) {
+    const contactId = await findContactIdByTenantAndPhone(tenantId, phoneNumber);
+    if (!contactId) return { threadId: null, lastInboundAt: null, windowOpen: false, windowExpiresAt: null };
+
     const { data: contact } = await supabaseAdmin
       .from('contacts')
       .select('id')
       .eq('tenant_id', tenantId)
-      .eq('phone_number', phoneNumber)
+      .eq('id', contactId)
       .is('deleted_at', null)
       .maybeSingle();
 
@@ -543,6 +584,11 @@ app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
     return res.status(400).json({ error: 'phone_number and message_text are required' });
   }
 
+  const toPhone = normalizeWhatsAppPhone(phone_number);
+  if (!toPhone) {
+    return res.status(400).json({ error: 'Invalid phone_number: use E.164 (ej. 59169160323 o +59169160323)' });
+  }
+
   try {
     // 1. Get WhatsApp config for tenant
     const { data: config, error: configError } = await supabaseAdmin
@@ -558,7 +604,7 @@ app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
 
     const windowState = await getConversationWindowState({
       tenantId,
-      phoneNumber: phone_number,
+      phoneNumber: toPhone,
       explicitThreadId: thread_id || null,
     });
     if (!windowState.windowOpen) {
@@ -583,7 +629,7 @@ app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
         body: JSON.stringify({
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
-          to: phone_number,
+          to: toPhone,
           type: 'text',
           text: { preview_url: false, body: message_text },
         }),
@@ -603,7 +649,7 @@ app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
     if (!resolvedThreadId) {
       const resolved = await resolveContactAndThread({
         tenantId,
-        phoneNumber: phone_number,
+        phoneNumber: toPhone,
         userId,
         seedLastMessage: message_text,
       });
@@ -661,6 +707,11 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
     return res.status(400).json({ error: 'template_id or template_name is required' });
   }
 
+  const toPhone = normalizeWhatsAppPhone(phone_number);
+  if (!toPhone) {
+    return res.status(400).json({ error: 'Invalid phone_number: use E.164 (ej. 59169160323 o +59169160323)' });
+  }
+
   try {
     const { data: config, error: configError } = await supabaseAdmin
       .from('whatsapp_configurations')
@@ -700,7 +751,7 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
     const payload = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
-      to: phone_number,
+      to: toPhone,
       type: 'template',
       template: {
         name: approvedTemplate.template_name,
@@ -733,7 +784,7 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
     if (!resolvedThreadId) {
       const resolved = await resolveContactAndThread({
         tenantId,
-        phoneNumber: phone_number,
+        phoneNumber: toPhone,
         userId,
         seedLastMessage: `[TPL] ${approvedTemplate.template_name}`,
       });
@@ -757,7 +808,7 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
 
     const windowState = await getConversationWindowState({
       tenantId,
-      phoneNumber: phone_number,
+      phoneNumber: toPhone,
       explicitThreadId: resolvedThreadId || null,
     });
 
@@ -800,13 +851,6 @@ function extractTemplateName(messageText) {
   const text = String(messageText || '').trim();
   if (!text.startsWith('[TPL]')) return null;
   return text.replace(/^\[TPL\]\s*/i, '').trim() || null;
-}
-
-function normalizeWhatsAppPhone(rawPhone) {
-  const raw = String(rawPhone || '').trim();
-  if (!raw) return '';
-  // Meta expects digits in E.164 without "+" and no spaces/symbols.
-  return raw.replace(/[^\d]/g, '');
 }
 
 function normalizeMassSendFilters(input = {}) {

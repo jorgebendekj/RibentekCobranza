@@ -106,8 +106,9 @@ BEGIN
   VALUES (t_id, 'Maria Gomez', '+573004445566', 'maria.gomez@example.com', actor_id, actor_id)
   RETURNING id INTO maria_id;
 
+  -- Teléfono en formato E.164 solo dígitos (recomendado por Meta para el campo `to`)
   INSERT INTO public.contacts (tenant_id, name, phone_number, email, created_by, updated_by)
-  VALUES (t_id, 'Cliente Bolivia (envío masivo)', '+59169160323', 'cliente.bolivia@example.com', actor_id, actor_id)
+  VALUES (t_id, 'Cliente Bolivia (envío masivo)', '59169160323', 'cliente.bolivia@example.com', actor_id, actor_id)
   RETURNING id INTO bolivia_id;
 
   -- Deudas: fila agregada + detalle (dispara recalc_debts_aggregate)
