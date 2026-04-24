@@ -359,7 +359,12 @@ export function GestionDeudas() {
               toast.success(`Envío ejecutado. Sent: ${runResult.summary.sent}, failed: ${runResult.summary.failed}, skipped: ${runResult.summary.skipped}`);
               if (runResult.summary.failed > 0 && runResult.failed_samples?.length) {
                 const firstFailed = runResult.failed_samples[0];
-                toast.error(`Motivo de fallo (${firstFailed.phone_number}): ${firstFailed.error_message}`);
+                const raw = String(firstFailed.error_message || "");
+                const hint =
+                  /not registered/i.test(raw)
+                    ? " WhatsApp/Meta no reconoce ese MSISDN como cuenta activa: revisa que el número en contacto sea exactamente el de WhatsApp (solo dígitos, código país) y que no sea fijo ni duplicado con otro prefijo."
+                    : "";
+                toast.error(`Motivo de fallo (${firstFailed.phone_number}): ${raw}${hint}`);
               }
               handleCloseModal();
             },

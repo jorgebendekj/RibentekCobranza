@@ -67,14 +67,25 @@ export const dashboardService = {
       weeks.map(async (w) => {
         const { count: recordatorios } = await supabase
           .from('reminder_logs')
-          .select('id', { count: 'exact', head: true })
+          .select(
+            `
+            id,
+            debt_details!inner(
+              contacts!inner(tenant_id)
+            )
+          `,
+            { count: 'exact', head: true }
+          )
+          .eq('debt_details.contacts.tenant_id', tenantId)
           .gte('sent_at', w.from)
-          .lte('sent_at', w.to);
+          .lte('sent_at', w.to)
+          .not('sent_at', 'is', null);
 
         const { count: pagos } = await supabase
           .from('debt_details')
-          .select('id', { count: 'exact', head: true })
+          .select('id, contacts!inner(tenant_id)', { count: 'exact', head: true })
           .eq('debt_status', 'Paid')
+          .eq('contacts.tenant_id', tenantId)
           .gte('updated_at', w.from)
           .lte('updated_at', w.to);
 
