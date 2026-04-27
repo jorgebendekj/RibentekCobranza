@@ -967,7 +967,8 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
       kind: 'template',
       template_name: approvedTemplate.template_name,
       language: String(language || approvedTemplate.language || config.default_template_language || 'es_LA'),
-      components: components || [],
+      template_components: approvedTemplate.components || [],
+      sent_components: components || [],
       text: templatePreviewBody || savedText,
       ts: new Date().toISOString(),
     });
@@ -1155,7 +1156,7 @@ async function resolveApprovedTemplateForTenant({ tenantId, templateId, template
 
   let query = supabaseAdmin
     .from('whatsapp_templates')
-    .select('id, template_name, language, meta_status')
+    .select('id, template_name, language, meta_status, components')
     .eq('whatsapp_configuration_id', config.id)
     .eq('meta_status', 'APPROVED')
     .is('deleted_at', null)
@@ -1871,7 +1872,8 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
           kind: 'template',
           template_name: runtimeTemplateName,
           language: runtimeLanguage,
-          components: components || [],
+          template_components: approvedTemplate.components || [],
+          sent_components: components || [],
           text: templatePreviewBody || savedText,
           ts: new Date().toISOString(),
         });

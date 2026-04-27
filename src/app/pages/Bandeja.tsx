@@ -46,13 +46,20 @@ type RichMessage = {
   template_name?: string | null;
   language?: string | null;
   components?: Array<Record<string, unknown>>;
+  template_components?: Array<Record<string, unknown>>;
+  sent_components?: Array<Record<string, unknown>>;
 };
 
 function parseRichMessage(raw: string | null): RichMessage | null {
   const text = String(raw || "");
-  if (!text.startsWith(RICH_MSG_PREFIX)) return null;
+  if (!text) return null;
+  const normalized = text.trimStart();
+  const prefixIndex = normalized.indexOf(RICH_MSG_PREFIX);
+  if (prefixIndex < 0) return null;
   try {
-    const parsed = JSON.parse(text.slice(RICH_MSG_PREFIX.length));
+    const jsonStart = normalized.indexOf("{", prefixIndex + RICH_MSG_PREFIX.length);
+    if (jsonStart < 0) return null;
+    const parsed = JSON.parse(normalized.slice(jsonStart));
     return parsed as RichMessage;
   } catch {
     return null;
@@ -723,11 +730,16 @@ export function Bandeja() {
                       allMessages.map((msg) => {
                         const isAgent = !msg.incoming;
                         const rich = parseRichMessage(msg.message_text);
-                        const messageText = rich?.text || msg.message_text || "";
+                        const rawMessageText = String(msg.message_text || "");
+                        const looksLikeRichPayload = rawMessageText.trimStart().includes(RICH_MSG_PREFIX);
+                        const messageText = rich?.text || (looksLikeRichPayload ? "[mensaje enriquecido]" : rawMessageText);
                         const mediaUrl = rich?.media_url || msg.media_url || null;
                         const templateName = rich?.kind === "template" ? rich?.template_name : null;
                         const templateLang = rich?.kind === "template" ? rich?.language : null;
-                        const templateComponents = Array.isArray(rich?.components) ? rich?.components : [];
+                        const templateComponents = Array.isArray(rich?.template_components)
+                          ? rich?.template_components
+                          : (Array.isArray(rich?.components) ? rich?.components : []);
+                        const sentComponents = Array.isArray(rich?.sent_components) ? rich?.sent_components : [];
                         return (
                           <div
                             key={msg.id}
@@ -756,13 +768,65 @@ export function Bandeja() {
                                   <div className={`text-[10px] uppercase tracking-wide ${isAgent ? "text-blue-200" : "text-slate-500"}`}>
                                     Plantilla{templateName ? ` · ${templateName}` : ""}{templateLang ? ` · ${templateLang}` : ""}
                                   </div>
-                                  <div className={`rounded-lg border px-3 py-2 text-sm ${isAgent ? "border-blue-400/40 bg-blue-500/30" : "border-slate-200 bg-slate-50"}`}>
-                                    <p className="whitespace-pre-wrap leading-relaxed">{messageText || "[Template enviado]"}</p>
-                                  </div>
-                                  {templateComponents.length > 0 ? (
+                                  {templateComponents.map((c, idx) => {
+                                    const type = String((c as { type?: string }).type || "").toUpperCase();
+                                    if (type === "HEADER") {
+                                      const format = String((c as { format?: string }).format || "").toUpperCase();
+                                      const text = String((c as { text?: string }).text || "");
+                                      return (
+                                        <div key={`tpl-h-${idx}`} className={`rounded-lg border px-3 py-2 text-sm ${isAgent ? "border-blue-400/40 bg-blue-500/20" : "border-slate-200 bg-white"}`}>
+                                          <p className="text-[10px] uppercase opacity-70 mb-1">Header {format || "TEXT"}</p>
+                                          {format === "TEXT" ? <p className="whitespace-pre-wrap">{text || "(sin texto)"}</p> : <p>Contenido multimedia ({format || "MEDIA"})</p>}
+                                        </div>
+                                      );
+                                    }
+                                    if (type === "BODY") {
+                                      const text = String((c as { text?: string }).text || "");
+                                      return (
+                                        <div key={`tpl-b-${idx}`} className={`rounded-lg border px-3 py-2 text-sm ${isAgent ? "border-blue-400/40 bg-blue-500/30" : "border-slate-200 bg-slate-50"}`}>
+                                          <p className="whitespace-pre-wrap leading-relaxed">{text || messageText || "[Template enviado]"}</p>
+                                        </div>
+                                      );
+                                    }
+                                    if (type === "FOOTER") {
+                                      const text = String((c as { text?: string }).text || "");
+                                      return (
+                                        <div key={`tpl-f-${idx}`} className={`text-xs ${isAgent ? "text-blue-100" : "text-slate-500"}`}>
+                                          {text}
+                                        </div>
+                                      );
+                                    }
+                                    if (type === "BUTTONS") {
+                                      const buttons = Array.isArray((c as { buttons?: Array<{ type?: string; text?: string }> }).buttons)
+                                        ? ((c as { buttons: Array<{ type?: string; text?: string }> }).buttons)
+                                        : [];
+                                      return (
+                                        <div key={`tpl-btn-${idx}`} className="flex flex-wrap gap-2">
+                                          {buttons.map((b, bIdx) => (
+                                            <span
+                                              key={`btn-${idx}-${bIdx}`}
+                                              className={`inline-flex items-center rounded-full border px-2 py-1 text-xs ${
+                                                isAgent ? "border-blue-300/50 text-blue-100" : "border-slate-300 text-slate-700"
+                                              }`}
+                                            >
+                                              {b.text || "Botón"} <span className="ml-1 opacity-70">({String(b.type || "").toUpperCase()})</span>
+                                            </span>
+                                          ))}
+                                        </div>
+                                      );
+                                    }
+                                    return null;
+                                  })}
+                                  {templateComponents.length === 0 ? (
+                                    <div className={`rounded-lg border px-3 py-2 text-sm ${isAgent ? "border-blue-400/40 bg-blue-500/30" : "border-slate-200 bg-slate-50"}`}>
+                                      <p className="whitespace-pre-wrap leading-relaxed">{messageText || "[Template enviado]"}</p>
+                                    </div>
+                                  ) : null}
+                                  {sentComponents.length > 0 ? (
                                     <div className={`rounded-lg border px-3 py-2 text-xs ${isAgent ? "border-blue-400/40 bg-blue-500/20 text-blue-100" : "border-slate-200 bg-white text-slate-600"}`}>
-                                      {templateComponents.map((c, idx) => (
-                                        <p key={idx} className="truncate">• {String((c as { type?: string }).type || "component")}</p>
+                                      <p className="mb-1 font-medium">Parámetros enviados</p>
+                                      {sentComponents.map((c, idx) => (
+                                        <p key={`sent-${idx}`} className="truncate">• {String((c as { type?: string }).type || "component")}</p>
                                       ))}
                                     </div>
                                   ) : null}
