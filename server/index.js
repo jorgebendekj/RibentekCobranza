@@ -67,8 +67,11 @@ function computeWindowState(lastInboundAt) {
   };
 }
 
-/** Meta Cloud API `to` field: E.164 digits only, no leading +. */
-function normalizeWhatsAppPhone(rawPhone) {
+const PHONE_E164_MIN_LENGTH = 8;
+const PHONE_E164_MAX_LENGTH = 15;
+
+/** Canonical phone for DB and Meta `to`: E.164 digits only, no leading +. */
+function normalizePhoneCanonical(rawPhone) {
   const raw = String(rawPhone || '').trim();
   if (!raw) return '';
   let digits = raw.replace(/[^\d]/g, '');
@@ -78,8 +81,41 @@ function normalizeWhatsAppPhone(rawPhone) {
   if (digits.startsWith('5910') && digits.length === 12) {
     digits = `591${digits.slice(4)}`;
   }
-  if (digits.length < 8 || digits.length > 15) return '';
+  if (digits.length < PHONE_E164_MIN_LENGTH || digits.length > PHONE_E164_MAX_LENGTH) return '';
   return digits;
+}
+
+/** Meta Cloud API `to` field: E.164 digits only, no leading +. */
+function normalizeWhatsAppPhone(rawPhone) {
+  return normalizePhoneCanonical(rawPhone);
+}
+
+function mapMetaError(metaError = null) {
+  const code = Number(metaError?.code || 0) || null;
+  const message = String(metaError?.message || 'Meta API Error');
+
+  if (code === 131030 || /not in allowed list/i.test(message)) {
+    return {
+      code: 'META_RECIPIENT_NOT_ALLOWED',
+      message: 'Recipient phone number not in allowed list',
+      hint: 'El número no está permitido en la allow list del entorno Meta (modo test). Agrega el destinatario en Meta o usa credenciales de producción.',
+      meta_code: code,
+    };
+  }
+  if (code === 131031 || /not registered/i.test(message)) {
+    return {
+      code: 'META_ACCOUNT_NOT_REGISTERED',
+      message: 'The account is not registered',
+      hint: 'Meta no reconoce el número como cuenta de WhatsApp activa. Verifica MSISDN exacto y formato E.164.',
+      meta_code: code,
+    };
+  }
+  return {
+    code: 'META_SEND_ERROR',
+    message,
+    hint: null,
+    meta_code: code,
+  };
 }
 
 async function findContactIdByTenantAndPhone(tenantId, rawPhone) {
@@ -638,8 +674,11 @@ app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
 
     const metaData = await metaRes.json();
     if (!metaRes.ok) {
+      const mapped = mapMetaError(metaData.error);
       return res.status(metaRes.status).json({
-        error: metaData.error?.message || 'Meta API Error',
+        error: mapped.message,
+        code: mapped.code,
+        hint: mapped.hint,
         details: metaData.error,
       });
     }
@@ -780,8 +819,11 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
 
     const metaData = await metaRes.json();
     if (!metaRes.ok) {
+      const mapped = mapMetaError(metaData.error);
       return res.status(metaRes.status).json({
-        error: metaData.error?.message || 'Meta API Error',
+        error: mapped.message,
+        code: mapped.code,
+        hint: mapped.hint,
         details: metaData.error,
       });
     }
@@ -1071,7 +1113,7 @@ async function buildMassSendCandidates({ tenantId, filters, sampleLimit = 20 }) 
 
   const contactsMap = new Map();
   for (const debt of debtsRows) {
-    const phone = String(debt.contacts?.phone_number || '').trim();
+    const phone = normalizePhoneCanonical(debt.contacts?.phone_number);
     if (!phone) continue;
     const existing = contactsMap.get(debt.contact_id);
     if (!existing || Number(debt.total_pending || 0) > Number(existing.total_pending || 0)) {
@@ -1131,7 +1173,7 @@ async function buildMassSendCandidates({ tenantId, filters, sampleLimit = 20 }) 
     if (manualContactsError) throw new Error(manualContactsError.message);
 
     for (const contact of manualContacts) {
-      const phone = String(contact.phone_number || '').trim();
+      const phone = normalizePhoneCanonical(contact.phone_number);
       if (!phone) continue;
       candidates.push({
         contact_id: contact.id,
@@ -1669,7 +1711,10 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
           body: JSON.stringify(payload),
         });
         const metaData = await metaRes.json();
-        if (!metaRes.ok) throw new Error(metaData.error?.message || 'Meta API Error');
+        if (!metaRes.ok) {
+          const mapped = mapMetaError(metaData.error);
+          throw new Error(`${mapped.code}: ${mapped.message}${mapped.hint ? ` — ${mapped.hint}` : ''}`);
+        }
 
         const resolved = await resolveContactAndThread({
           tenantId,
@@ -1992,25 +2037,29 @@ app.post('/api/notifications/debt-threshold/check', requireWorkspaceAdmin, async
 // ════════════════════════════════════════════════════════════════
 
 function normalizePhone(phone) {
-  if (!phone) return null;
-  const s = String(phone).trim();
-  if (!s) return null;
-  // keep + and digits
-  const cleaned = s.replace(/[^\d+]/g, '');
-  return cleaned || null;
+  const normalized = normalizePhoneCanonical(phone);
+  return normalized || null;
 }
 
 async function upsertContactByIdentity({ tenantId, actorUserId, name, phone_number, email }) {
   const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
   const normalizedPhone = normalizePhone(phone_number);
+  const hasRawPhone = Boolean(String(phone_number || '').trim());
+  if (hasRawPhone && !normalizedPhone) {
+    throw new Error('INVALID_PHONE_FORMAT: Usa E.164 con código país (ej: 59172654203)');
+  }
+  if (!normalizedPhone && !normalizedEmail) {
+    throw new Error('MISSING_CONTACT_IDENTITY: phone_number o email es requerido');
+  }
 
   let existing = null;
   if (normalizedPhone) {
+    const existingId = await findContactIdByTenantAndPhone(tenantId, normalizedPhone);
     const { data } = await supabaseAdmin
       .from('contacts')
       .select('*')
       .eq('tenant_id', tenantId)
-      .eq('phone_number', normalizedPhone)
+      .eq('id', existingId || '00000000-0000-0000-0000-000000000000')
       .is('deleted_at', null)
       .maybeSingle();
     if (data) existing = data;
@@ -2027,7 +2076,7 @@ async function upsertContactByIdentity({ tenantId, actorUserId, name, phone_numb
     if (data) existing = data;
   }
 
-  if (existing?.id) return existing;
+  if (existing?.id) return { ...existing, _created: false };
 
   const { data: created, error } = await supabaseAdmin
     .from('contacts')
@@ -2042,7 +2091,7 @@ async function upsertContactByIdentity({ tenantId, actorUserId, name, phone_numb
     .select('*')
     .single();
   if (error) throw new Error(error.message);
-  return created;
+  return { ...created, _created: true };
 }
 
 async function getOrCreateDebtAggregate({ tenantId, actorUserId, contactId }) {
@@ -2082,6 +2131,10 @@ app.post('/api/debts/create', requireWorkspaceAdmin, async (req, res) => {
     const firstItem = Array.isArray(items) ? items[0] : null;
     if ((!contactId && !contact) || !firstItem) {
       return res.status(400).json({ error: 'Missing required fields: contactId/contact and items[0]' });
+    }
+
+    if (contact && String(contact.phone_number || '').trim() && !normalizePhone(contact.phone_number)) {
+      return res.status(400).json({ error: 'INVALID_PHONE_FORMAT: Usa E.164 con código país (ej: 59172654203)' });
     }
 
     const resolvedContact = contactId
@@ -2133,25 +2186,67 @@ app.post('/api/debts/import', requireWorkspaceAdmin, async (req, res) => {
     const { rows } = req.body || {};
     if (!Array.isArray(rows) || rows.length === 0) return res.status(400).json({ error: 'rows[] is required' });
 
-    const results = { created_contacts: 0, created_items: 0, errors: [] };
+    const results = { created_contacts: 0, created_items: 0, invalid_rows: [], errors: [] };
 
     for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
       try {
+        const rawPhone = String(r.phone_number ?? r.phone ?? r.telefono ?? '').trim();
+        const normalizedPhone = normalizePhone(rawPhone);
+        const normalizedEmail = String(r.email ?? '').trim().toLowerCase() || null;
+        const amount = Number(r.amount ?? r.debt_amount ?? 0);
+        const penalty = Number(r.penalty ?? r.penalty_amount ?? 0);
+        const total = Number(r.total ?? amount + penalty);
+        const expiration_date = String(r.expiration_date ?? '').trim();
+        const expirationTs = new Date(expiration_date).getTime();
+
+        if (!normalizedPhone && !normalizedEmail) {
+          results.invalid_rows.push({
+            row: i + 1,
+            raw_phone: rawPhone || null,
+            normalized_phone: null,
+            reason: 'MISSING_CONTACT_IDENTITY',
+          });
+          continue;
+        }
+        if (rawPhone && !normalizedPhone) {
+          results.invalid_rows.push({
+            row: i + 1,
+            raw_phone: rawPhone,
+            normalized_phone: null,
+            reason: 'INVALID_PHONE_FORMAT',
+          });
+          continue;
+        }
+        if (!Number.isFinite(amount) || amount <= 0) {
+          results.invalid_rows.push({
+            row: i + 1,
+            raw_phone: rawPhone || null,
+            normalized_phone: normalizedPhone,
+            reason: 'INVALID_AMOUNT',
+          });
+          continue;
+        }
+        if (!expiration_date || !Number.isFinite(expirationTs)) {
+          results.invalid_rows.push({
+            row: i + 1,
+            raw_phone: rawPhone || null,
+            normalized_phone: normalizedPhone,
+            reason: 'INVALID_EXPIRATION_DATE',
+          });
+          continue;
+        }
+
         const contactRow = await upsertContactByIdentity({
           tenantId,
           actorUserId,
           name: r.name ?? r.contact_name,
-          phone_number: r.phone_number ?? r.phone ?? r.telefono,
-          email: r.email,
+          phone_number: normalizedPhone,
+          email: normalizedEmail,
         });
-        if (contactRow?.id) results.created_contacts++;
+        if (contactRow?._created) results.created_contacts++;
 
         const debtId = await getOrCreateDebtAggregate({ tenantId, actorUserId, contactId: contactRow.id });
-
-        const amount = Number(r.amount ?? r.debt_amount ?? 0);
-        const penalty = Number(r.penalty ?? r.penalty_amount ?? 0);
-        const total = Number(r.total ?? amount + penalty);
 
         const { error: insertError } = await supabaseAdmin.from('debt_details').insert({
           contact_id: contactRow.id,
@@ -2160,7 +2255,7 @@ app.post('/api/debts/import', requireWorkspaceAdmin, async (req, res) => {
           penalty_amount: penalty,
           total,
           debt_description: r.description ?? r.debt_description ?? null,
-          expiration_date: r.expiration_date,
+          expiration_date,
           debt_status: 'Pending',
           created_by: actorUserId,
           updated_by: actorUserId,

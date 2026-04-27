@@ -237,9 +237,9 @@ export function GestionDeudas() {
         description: r.description ?? r.concepto ?? r.debt_description ?? "",
         expiration_date,
       };
-    }).filter((r) => r.amount > 0 && r.expiration_date);
+    });
     setImportRows(mapped);
-    toast.success(`Archivo cargado: ${mapped.length} filas válidas`);
+    toast.success(`Archivo cargado: ${mapped.length} filas`);
   };
 
   const runImport = async () => {
@@ -248,10 +248,14 @@ export function GestionDeudas() {
     setImporting(true);
     try {
       const res = await adminDebtsService.import(tenantId, { rows: importRows });
+      if (res.invalid_rows?.length) {
+        const sample = res.invalid_rows.slice(0, 3).map((r) => `fila ${r.row}: ${r.reason}`).join(" | ");
+        toast.error(`Filas inválidas: ${res.invalid_rows.length}. ${sample}`);
+      }
       if (res.errors?.length) {
         toast.error(`Importado con errores: ${res.created_items} items, ${res.errors.length} fallos`);
       } else {
-        toast.success(`Importado: ${res.created_items} items`);
+        toast.success(`Importado: ${res.created_items} items (${res.created_contacts} contactos nuevos)`);
       }
       setShowImport(false);
     } catch (e) {

@@ -150,5 +150,11 @@ export const adminDebtsService = {
   create: (tenantId: string, body: { contactId?: string; contact?: { name?: string; phone_number?: string; email?: string }; items: CreateDebtItem[] }) =>
     adminTenantFetch<{ success: boolean; debt_id: string }>(tenantId, '/api/debts/create', { method: 'POST', body: JSON.stringify(body) }),
   import: (tenantId: string, body: { rows: Array<{ name?: string; phone_number?: string; email?: string; amount: number; penalty?: number; total?: number; description?: string; expiration_date: string }> }) =>
-    adminTenantFetch<{ success: boolean; created_items: number; errors: Array<{ row: number; error: string }> }>(tenantId, '/api/debts/import', { method: 'POST', body: JSON.stringify(body) }),
+    adminTenantFetch<{
+      success: boolean;
+      created_contacts: number;
+      created_items: number;
+      invalid_rows: Array<{ row: number; raw_phone: string | null; normalized_phone: string | null; reason: string }>;
+      errors: Array<{ row: number; error: string }>;
+    }>(tenantId, '/api/debts/import', { method: 'POST', body: JSON.stringify(body) }),
 };
