@@ -66,6 +66,25 @@ function parseRichMessage(raw: string | null): RichMessage | null {
   }
 }
 
+function extractSentBodyParams(components: Array<Record<string, unknown>>): string[] {
+  return components.flatMap((c) => {
+    const cType = String((c as { type?: string }).type || "").toUpperCase();
+    if (cType !== "BODY") return [];
+    const params = (c as { parameters?: Array<{ text?: string }> }).parameters;
+    if (!Array.isArray(params)) return [];
+    return params.map((p) => String(p?.text || "").trim()).filter(Boolean);
+  });
+}
+
+function interpolateTemplateBody(bodyText: string, params: string[]): string {
+  if (!bodyText) return "";
+  if (!params.length) return bodyText;
+  return bodyText.replace(/\{\{(\d+)\}\}/g, (_, indexRaw: string) => {
+    const index = Number(indexRaw) - 1;
+    return index >= 0 && index < params.length ? params[index] : `{{${indexRaw}}}`;
+  });
+}
+
 type SendComposerProps = {
   activePhone: string;
   isWindowOpen: boolean;
@@ -740,13 +759,9 @@ export function Bandeja() {
                           ? rich?.template_components
                           : (Array.isArray(rich?.components) ? rich?.components : []);
                         const sentComponents = Array.isArray(rich?.sent_components) ? rich?.sent_components : [];
-                        const sentBodyParams = sentComponents.flatMap((c) => {
-                          const cType = String((c as { type?: string }).type || "").toUpperCase();
-                          if (cType !== "BODY") return [];
-                          const params = (c as { parameters?: Array<{ text?: string }> }).parameters;
-                          if (!Array.isArray(params)) return [];
-                          return params.map((p) => String(p?.text || "").trim()).filter(Boolean);
-                        });
+                        const sentBodyParams = extractSentBodyParams(sentComponents);
+                        const templateBodyComponent = templateComponents.find((c) => String((c as { type?: string }).type || "").toUpperCase() === "BODY") as { text?: string } | undefined;
+                        const resolvedBodyText = interpolateTemplateBody(String(templateBodyComponent?.text || ""), sentBodyParams);
                         return (
                           <div
                             key={msg.id}
@@ -791,7 +806,9 @@ export function Bandeja() {
                                       const text = String((c as { text?: string }).text || "");
                                       return (
                                         <div key={`tpl-b-${idx}`} className={`rounded-lg border px-3 py-2 text-sm ${isAgent ? "border-blue-400/40 bg-blue-500/30" : "border-slate-200 bg-slate-50"}`}>
-                                          <p className="whitespace-pre-wrap leading-relaxed">{text || messageText || "[Template enviado]"}</p>
+                                          <p className="whitespace-pre-wrap leading-relaxed">
+                                            {interpolateTemplateBody(text, sentBodyParams) || messageText || "[Template enviado]"}
+                                          </p>
                                         </div>
                                       );
                                     }
@@ -827,7 +844,7 @@ export function Bandeja() {
                                   {templateComponents.length === 0 ? (
                                     <div className={`rounded-lg border px-3 py-2 text-sm ${isAgent ? "border-blue-400/40 bg-blue-500/30" : "border-slate-200 bg-slate-50"}`}>
                                       <p className="whitespace-pre-wrap leading-relaxed">
-                                        {sentBodyParams.length > 0 ? sentBodyParams.join(" | ") : (messageText || "[Template enviado]")}
+                                        {resolvedBodyText || (sentBodyParams.length > 0 ? sentBodyParams.join(" | ") : (messageText || "[Template enviado]"))}
                                       </p>
                                     </div>
                                   ) : null}
