@@ -110,6 +110,14 @@ function mapMetaError(metaError = null) {
       meta_code: code,
     };
   }
+  if (code === 132001 || /does not exist in the translation/i.test(message)) {
+    return {
+      code: 'META_TEMPLATE_LANGUAGE_MISMATCH',
+      message: 'Template name does not exist in the translation',
+      hint: 'El idioma enviado no coincide con el idioma aprobado para esa plantilla en Meta. Sincroniza plantillas y usa el language exacto de Meta.',
+      meta_code: code,
+    };
+  }
   return {
     code: 'META_SEND_ERROR',
     message,
@@ -1498,7 +1506,8 @@ app.post('/api/meta/mass-sends', requireWorkspaceAdmin, async (req, res) => {
         whatsapp_template_id: approvedTemplate.id,
         name: String(name).trim(),
         template_name: approvedTemplate.template_name,
-        language: String(language || approvedTemplate.language || 'es_LA'),
+        // Always persist Meta-approved template language to avoid translation mismatches at send time.
+        language: String(approvedTemplate.language || language || 'es_LA'),
         template_parameters: Array.isArray(template_parameters) ? template_parameters : [],
         filters: normalizedFilters,
         mode: finalMode,
@@ -1629,6 +1638,14 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
       return res.status(400).json({ error: 'WhatsApp not configured or phone_number_id missing' });
     }
 
+    const approvedTemplate = await resolveApprovedTemplateForTenant({
+      tenantId,
+      templateId: massSend.whatsapp_template_id || null,
+      templateName: massSend.template_name || null,
+    });
+    const runtimeTemplateName = String(approvedTemplate.template_name || massSend.template_name || '');
+    const runtimeLanguage = String(approvedTemplate.language || massSend.language || 'es_LA');
+
     const candidatesResult = await buildMassSendCandidates({ tenantId, filters: massSend.filters, sampleLimit: 5000 });
     const recipients = candidatesResult.candidates;
 
@@ -1661,7 +1678,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
           mass_send_run_id: runRow.id,
           contact_id: recipient.contact_id,
           phone_number: String(recipient.phone_number || ''),
-          template_name: massSend.template_name,
+          template_name: runtimeTemplateName,
           status: 'skipped',
             error_message: 'Missing or invalid phone number',
           created_by: userId,
@@ -1671,7 +1688,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
       }
 
       try {
-        const massTemplateName = String(massSend.template_name || '').toLowerCase();
+        const massTemplateName = String(runtimeTemplateName || '').toLowerCase();
         let effectiveParams = Array.isArray(massSend.template_parameters)
           ? massSend.template_parameters.map((v) => String(v ?? ''))
           : [];
@@ -1696,8 +1713,8 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
           to: normalizedPhone,
           type: 'template',
           template: {
-            name: massSend.template_name,
-            language: { code: String(massSend.language || 'es_LA') },
+            name: runtimeTemplateName,
+            language: { code: runtimeLanguage },
             ...(components ? { components } : {}),
           },
         };
@@ -1720,10 +1737,10 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
           tenantId,
           phoneNumber: String(recipient.phone_number || normalizedPhone),
           userId,
-          seedLastMessage: `[MASIVO] ${massSend.template_name}`,
+          seedLastMessage: `[MASIVO] ${runtimeTemplateName}`,
         });
         const resolvedThreadId = resolved.threadId;
-        const savedText = `[MASIVO] ${massSend.template_name}`;
+        const savedText = `[MASIVO] ${runtimeTemplateName}`;
 
         const { data: savedMessage } = await supabaseAdmin
           .from('whatsapp_messages')
@@ -1766,7 +1783,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
             mass_send_run_id: runRow.id,
             contact_id: resolved.contactId,
             phone_number: String(recipient.phone_number || normalizedPhone),
-            template_name: massSend.template_name,
+            template_name: runtimeTemplateName,
             status: 'sent',
             meta_message_id: metaData?.messages?.[0]?.id || null,
             whatsapp_thread_id: resolvedThreadId,
@@ -1786,7 +1803,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
             mass_send_run_id: runRow.id,
             contact_id: recipient.contact_id || null,
             phone_number: String(recipient.phone_number || normalizedPhone || ''),
-            template_name: massSend.template_name,
+            template_name: runtimeTemplateName,
             status: 'failed',
             error_message: metaError,
             created_by: userId,
