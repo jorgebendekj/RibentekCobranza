@@ -887,7 +887,7 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
 
     let templateQuery = supabaseAdmin
       .from('whatsapp_templates')
-      .select('id, template_name, language, meta_status, whatsapp_configuration_id')
+      .select('id, template_name, language, meta_status, whatsapp_configuration_id, components')
       .eq('whatsapp_configuration_id', config.id)
       .eq('meta_status', 'APPROVED')
       .is('deleted_at', null)

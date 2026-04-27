@@ -740,6 +740,13 @@ export function Bandeja() {
                           ? rich?.template_components
                           : (Array.isArray(rich?.components) ? rich?.components : []);
                         const sentComponents = Array.isArray(rich?.sent_components) ? rich?.sent_components : [];
+                        const sentBodyParams = sentComponents.flatMap((c) => {
+                          const cType = String((c as { type?: string }).type || "").toUpperCase();
+                          if (cType !== "BODY") return [];
+                          const params = (c as { parameters?: Array<{ text?: string }> }).parameters;
+                          if (!Array.isArray(params)) return [];
+                          return params.map((p) => String(p?.text || "").trim()).filter(Boolean);
+                        });
                         return (
                           <div
                             key={msg.id}
@@ -819,15 +826,21 @@ export function Bandeja() {
                                   })}
                                   {templateComponents.length === 0 ? (
                                     <div className={`rounded-lg border px-3 py-2 text-sm ${isAgent ? "border-blue-400/40 bg-blue-500/30" : "border-slate-200 bg-slate-50"}`}>
-                                      <p className="whitespace-pre-wrap leading-relaxed">{messageText || "[Template enviado]"}</p>
+                                      <p className="whitespace-pre-wrap leading-relaxed">
+                                        {sentBodyParams.length > 0 ? sentBodyParams.join(" | ") : (messageText || "[Template enviado]")}
+                                      </p>
                                     </div>
                                   ) : null}
                                   {sentComponents.length > 0 ? (
                                     <div className={`rounded-lg border px-3 py-2 text-xs ${isAgent ? "border-blue-400/40 bg-blue-500/20 text-blue-100" : "border-slate-200 bg-white text-slate-600"}`}>
                                       <p className="mb-1 font-medium">Parámetros enviados</p>
-                                      {sentComponents.map((c, idx) => (
-                                        <p key={`sent-${idx}`} className="truncate">• {String((c as { type?: string }).type || "component")}</p>
-                                      ))}
+                                      {sentBodyParams.length > 0 ? (
+                                        sentBodyParams.map((value, idx) => (
+                                          <p key={`sent-p-${idx}`} className="truncate">• {value}</p>
+                                        ))
+                                      ) : (
+                                        <p className="truncate">• (sin parámetros posicionales)</p>
+                                      )}
                                     </div>
                                   ) : null}
                                 </div>
