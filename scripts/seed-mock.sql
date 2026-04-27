@@ -83,13 +83,8 @@ BEGIN
   );
   DELETE FROM public.reminders WHERE debt_id IN (SELECT id FROM public.debts WHERE tenant_id = t_id);
 
-  DELETE FROM public.debt_detail_qrs WHERE debt_detail_id IN (
-    SELECT dd.id
-    FROM public.debt_details dd
-    JOIN public.debts d ON d.id = dd.debt_id
-    WHERE d.tenant_id = t_id
-  );
-  DELETE FROM public.debt_details WHERE debt_id IN (SELECT id FROM public.debts WHERE tenant_id = t_id);
+  -- IMPORTANT: delete debts first and let CASCADE remove debt_details/debt_detail_qrs.
+  -- This avoids firing recalc on partial deletes against legacy rows with null counters.
   DELETE FROM public.debts WHERE tenant_id = t_id;
   DELETE FROM public.contacts WHERE tenant_id = t_id;
 

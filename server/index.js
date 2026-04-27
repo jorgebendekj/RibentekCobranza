@@ -740,11 +740,17 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
       return res.status(400).json({ error: 'Approved template not found for this workspace' });
     }
 
+    let effectiveParams = Array.isArray(template_parameters) ? template_parameters.map((v) => String(v ?? '')) : [];
+    const templateNameLower = String(approvedTemplate.template_name || '').toLowerCase();
+    if (templateNameLower === 'payment_overdue_2' && effectiveParams.length === 0) {
+      effectiveParams = await resolvePaymentOverdue2Params({ tenantId, phoneNumber: toPhone });
+    }
+
     let components;
-    if (Array.isArray(template_parameters) && template_parameters.length > 0) {
+    if (effectiveParams.length > 0) {
       components = [{
         type: 'body',
-        parameters: template_parameters.map((value) => ({ type: 'text', text: String(value) })),
+        parameters: effectiveParams.map((value) => ({ type: 'text', text: String(value) })),
       }];
     }
 
@@ -987,6 +993,59 @@ async function resolveApprovedTemplateForTenant({ tenantId, templateId, template
   const { data: approvedTemplate, error: templateError } = await query.maybeSingle();
   if (templateError || !approvedTemplate) throw new Error('Approved template not found for this workspace');
   return approvedTemplate;
+}
+
+function formatTemplateDate(dateValue) {
+  const d = new Date(dateValue);
+  if (!Number.isFinite(d.getTime())) return '';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = String(d.getFullYear());
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+function toTemplateMoney(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n)) return '0';
+  return (Math.round(n * 100) / 100).toFixed(2).replace(/\.00$/, '');
+}
+
+async function resolvePaymentOverdue2Params({ tenantId, contactId = null, phoneNumber = null }) {
+  let effectiveContactId = contactId;
+  if (!effectiveContactId && phoneNumber) {
+    effectiveContactId = await findContactIdByTenantAndPhone(tenantId, phoneNumber);
+  }
+  if (!effectiveContactId) {
+    throw new Error('No se pudo resolver el contacto para payment_overdue_2');
+  }
+
+  const { data: contact, error: contactError } = await supabaseAdmin
+    .from('contacts')
+    .select('id, name')
+    .eq('tenant_id', tenantId)
+    .eq('id', effectiveContactId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (contactError || !contact) throw new Error(contactError?.message || 'Contacto no encontrado');
+
+  const { data: details = [], error: detailsError } = await supabaseAdmin
+    .from('debt_details')
+    .select('id, debt_description, total, expiration_date, debt_status')
+    .eq('contact_id', effectiveContactId)
+    .is('deleted_at', null)
+    .in('debt_status', ['Pending', 'Active', 'Expired'])
+    .order('expiration_date', { ascending: true, nullsFirst: false })
+    .limit(1);
+  if (detailsError) throw new Error(detailsError.message);
+  const detail = details[0];
+  if (!detail) throw new Error('No hay deuda pendiente/activa para payment_overdue_2');
+
+  return [
+    String(contact.name || 'Cliente'),
+    String(detail.debt_description || `DEUDA-${String(detail.id).slice(0, 8)}`),
+    toTemplateMoney(detail.total),
+    formatTemplateDate(detail.expiration_date),
+  ];
 }
 
 async function buildMassSendCandidates({ tenantId, filters, sampleLimit = 20 }) {
@@ -1570,10 +1629,22 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
       }
 
       try {
-        const components = Array.isArray(massSend.template_parameters) && massSend.template_parameters.length > 0
+        const massTemplateName = String(massSend.template_name || '').toLowerCase();
+        let effectiveParams = Array.isArray(massSend.template_parameters)
+          ? massSend.template_parameters.map((v) => String(v ?? ''))
+          : [];
+        if (massTemplateName === 'payment_overdue_2' && effectiveParams.length === 0) {
+          effectiveParams = await resolvePaymentOverdue2Params({
+            tenantId,
+            contactId: recipient.contact_id || null,
+            phoneNumber: normalizedPhone,
+          });
+        }
+
+        const components = effectiveParams.length > 0
           ? [{
             type: 'body',
-            parameters: massSend.template_parameters.map((value) => ({ type: 'text', text: String(value) })),
+            parameters: effectiveParams.map((value) => ({ type: 'text', text: String(value) })),
           }]
           : undefined;
 
