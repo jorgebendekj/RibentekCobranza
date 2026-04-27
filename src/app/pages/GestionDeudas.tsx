@@ -32,6 +32,34 @@ import { adminDebtsService } from "../services/admin.service";
 type VistaMode = "individual" | "agrupada";
 type MassStep = 1 | 2 | 3 | 4 | 5;
 
+function interpolateTemplateText(text: string, params: string[]): string {
+  if (!text) return "";
+  if (!params.length) return text;
+  return text.replace(/\{\{(\d+)\}\}/g, (_, indexRaw: string) => {
+    const index = Number(indexRaw) - 1;
+    return index >= 0 && index < params.length ? params[index] : `{{${indexRaw}}}`;
+  });
+}
+
+function maxPlaceholderIndex(text: string): number {
+  let max = 0;
+  if (!text) return 0;
+  const re = /\{\{(\d+)\}\}/g;
+  let m: RegExpExecArray | null;
+  // eslint-disable-next-line no-cond-assign
+  while ((m = re.exec(text)) !== null) {
+    const n = Number(m[1]);
+    if (Number.isFinite(n)) max = Math.max(max, n);
+  }
+  return max;
+}
+
+function getTemplateComponent<T extends Record<string, unknown>>(components: unknown, type: string): T | null {
+  if (!Array.isArray(components)) return null;
+  const found = components.find((c) => String((c as { type?: string })?.type || "").toUpperCase() === type.toUpperCase());
+  return (found as T) || null;
+}
+
 const STATUS_OPTIONS: Array<{ value: DebtStatus | "all"; label: string }> = [
   { value: "all", label: "Todos los estados" },
   { value: "Pending", label: "Pendiente" },
@@ -833,6 +861,79 @@ export function GestionDeudas() {
                   <p className="text-amber-700">Advertencia: no hay destinatarios estimados para enviar.</p>
                 ) : null}
               </div>
+              {(() => {
+                const t = selectedTemplate as any;
+                const comps = Array.isArray(t?.components) ? (t.components as Array<Record<string, unknown>>) : [];
+                const header = getTemplateComponent<{ format?: string; text?: string }>(comps, "HEADER");
+                const body = getTemplateComponent<{ text?: string }>(comps, "BODY");
+                const footer = getTemplateComponent<{ text?: string }>(comps, "FOOTER");
+                const buttons = getTemplateComponent<{ buttons?: Array<{ type?: string; text?: string }> }>(comps, "BUTTONS");
+
+                const required = Math.max(
+                  maxPlaceholderIndex(String(header?.text || "")),
+                  maxPlaceholderIndex(String(body?.text || "")),
+                  maxPlaceholderIndex(String(footer?.text || "")),
+                );
+                const exampleParams = Array.from({ length: required }, (_, i) => `Valor ${i + 1}`);
+                const resolvedHeaderText = interpolateTemplateText(String(header?.text || ""), exampleParams);
+                const resolvedBodyText = interpolateTemplateText(String(body?.text || ""), exampleParams);
+                const resolvedFooterText = interpolateTemplateText(String(footer?.text || ""), exampleParams);
+
+                return (
+                  <div className="rounded-xl border bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-wide text-slate-500">Preview de plantilla</p>
+                        <p className="text-sm font-semibold text-slate-900">
+                          {t?.template_name ? String(t.template_name) : "—"} <span className="text-slate-500 font-normal">· {language || "—"}</span>
+                        </p>
+                      </div>
+                      <Badge variant="outline">WhatsApp</Badge>
+                    </div>
+
+                    <div className="mt-3 max-w-xl rounded-2xl border border-slate-200 bg-slate-50 p-3 space-y-2">
+                      {header ? (
+                        <div className="text-sm">
+                          <p className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Header {String(header.format || "TEXT").toUpperCase()}</p>
+                          {String(header.format || "").toUpperCase() === "TEXT"
+                            ? <p className="whitespace-pre-wrap">{resolvedHeaderText || "(sin texto)"}</p>
+                            : <p className="text-slate-600">[Contenido multimedia: {String(header.format || "MEDIA").toUpperCase()}]</p>}
+                        </div>
+                      ) : null}
+
+                      <div className="text-sm whitespace-pre-wrap leading-relaxed text-slate-900">
+                        {resolvedBodyText || (required > 0 ? "—" : "No hay BODY en esta plantilla.")}
+                      </div>
+
+                      {resolvedFooterText ? (
+                        <div className="text-xs text-slate-500 whitespace-pre-wrap">{resolvedFooterText}</div>
+                      ) : null}
+
+                      {Array.isArray(buttons?.buttons) && buttons!.buttons!.length > 0 ? (
+                        <div className="pt-1 space-y-1.5">
+                          {buttons!.buttons!.map((b, idx) => (
+                            <div
+                              key={`ms-prev-btn-${idx}`}
+                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 text-center"
+                            >
+                              {b.text || "Botón"}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {required > 0 ? (
+                      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                        <p className="font-medium text-slate-700">Parámetros de ejemplo</p>
+                        <p className="mt-1">{exampleParams.map((v, i) => `{{${i + 1}}} → ${v}`).join(" · ")}</p>
+                      </div>
+                    ) : (
+                      <p className="mt-3 text-xs text-slate-500">Esta plantilla no usa parámetros posicionales ({{n}}).</p>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           ) : null}
 
