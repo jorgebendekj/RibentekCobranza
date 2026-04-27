@@ -121,7 +121,10 @@ export const whatsappService = {
       body: JSON.stringify(payload),
     });
     const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Error validando y guardando configuración');
+    if (!res.ok) {
+      const detail = typeof json?.detail === 'string' ? `: ${json.detail}` : '';
+      throw new Error((json.error || 'Error validando y guardando configuración') + detail);
+    }
     return json.configuration as WhatsappConfiguration;
   },
 

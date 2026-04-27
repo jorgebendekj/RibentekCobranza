@@ -14,8 +14,21 @@ const adminBase = () => getAdminApiBase();
 
 /** Get auth header from current Supabase session */
 async function getAuthHeader(): Promise<{ Authorization: string }> {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) throw new Error('No active session');
+  const isJwtLike = (token: string | undefined | null) =>
+    typeof token === 'string' && token.split('.').length === 3;
+
+  let { data: { session } } = await supabase.auth.getSession();
+
+  // Some reset/migration flows can leave a stale malformed token in local storage.
+  // Try one refresh before failing hard.
+  if (!session || !isJwtLike(session.access_token)) {
+    const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+    if (refreshError || !refreshed?.session || !isJwtLike(refreshed.session.access_token)) {
+      throw new Error('Sesion invalida. Cierra sesion y vuelve a iniciar para obtener un token valido.');
+    }
+    session = refreshed.session;
+  }
+
   return { Authorization: `Bearer ${session.access_token}` };
 }
 

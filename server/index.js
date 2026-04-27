@@ -504,6 +504,11 @@ function verifyMetaSignature(req) {
   }
 }
 
+function shouldEnforceMetaSignature() {
+  const mode = String(process.env.META_WEBHOOK_SIGNATURE_MODE || 'warn').toLowerCase();
+  return mode === 'strict';
+}
+
 app.get('/webhooks/meta', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -539,10 +544,14 @@ app.post('/webhooks/meta', async (req, res) => {
     // Signature check — only enforced when META_APP_SECRET is set
     if (process.env.META_APP_SECRET) {
       if (!verifyMetaSignature(req)) {
-        console.warn('[webhook] invalid signature — rejecting');
-        return res.status(200).json({ ok: true, note: 'invalid_signature' });
+        if (shouldEnforceMetaSignature()) {
+          console.warn('[webhook] invalid signature — rejecting (strict mode)');
+          return res.status(200).json({ ok: true, note: 'invalid_signature' });
+        }
+        console.warn('[webhook] invalid signature — continuing (warn mode)');
+      } else {
+        console.log('[webhook] signature OK');
       }
-      console.log('[webhook] signature OK');
     } else {
       console.log('[webhook] META_APP_SECRET not set — skipping signature check');
     }
@@ -2439,7 +2448,12 @@ async function requireWorkspaceMember(req, res, next) {
 
   const token = authHeader.split(' ')[1];
   const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !user) return res.status(401).json({ error: 'Invalid token' });
+  if (error || !user) {
+    return res.status(401).json({
+      error: 'Invalid token',
+      detail: error?.message || null,
+    });
+  }
 
   const { data: membership } = await supabaseAdmin
     .from('tenant_members')
