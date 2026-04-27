@@ -875,49 +875,67 @@ export function GestionDeudas() {
                 const resolvedHeaderText = interpolateTemplateText(String(header?.text || ""), exampleParams);
                 const resolvedBodyText = interpolateTemplateText(String(body?.text || ""), exampleParams);
                 const resolvedFooterText = interpolateTemplateText(String(footer?.text || ""), exampleParams);
+                const previewTime = new Date().toLocaleTimeString("es", { hour: "numeric", minute: "2-digit" });
+                const hasButtons = Array.isArray(buttons?.buttons) && buttons.buttons.length > 0;
 
                 return (
-                  <div className="rounded-xl border bg-white p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-[11px] uppercase tracking-wide text-slate-500">Preview de plantilla</p>
-                        <p className="text-sm font-semibold text-slate-900">
-                          {t?.template_name ? String(t.template_name) : "—"} <span className="text-slate-500 font-normal">· {language || "—"}</span>
-                        </p>
+                  <div className="rounded-xl border overflow-hidden">
+                    <div className="flex items-center justify-between px-3 py-2 border-b bg-white">
+                      <div className="text-sm">
+                        <p className="font-semibold text-slate-900">Preview WhatsApp</p>
+                        <p className="text-xs text-slate-500">{t?.template_name ? String(t.template_name) : "—"} · {language || "—"}</p>
                       </div>
-                      <Badge variant="outline">WhatsApp</Badge>
+                      <Badge variant="outline" className="text-[10px]">Plantilla</Badge>
                     </div>
+                    <div
+                      className="p-4"
+                      style={{
+                        backgroundColor: "#efeae2",
+                        backgroundImage:
+                          "radial-gradient(circle at 25px 25px, rgba(0,0,0,0.045) 1.2px, transparent 0), radial-gradient(circle at 75px 75px, rgba(0,0,0,0.04) 1px, transparent 0)",
+                        backgroundSize: "100px 100px",
+                      }}
+                    >
+                      <div className="mx-auto max-w-[760px]">
+                        <div className="max-w-[700px] rounded-2xl border border-slate-300/80 bg-[#f7f7f7] px-4 py-3 shadow-[0_1px_0_rgba(0,0,0,0.08)]">
+                          {header ? (
+                            <p className="text-[42px] leading-[1.15] font-semibold text-slate-900 whitespace-pre-wrap">
+                              {String(header.format || "").toUpperCase() === "TEXT"
+                                ? (resolvedHeaderText || "")
+                                : `[${String(header.format || "MEDIA").toUpperCase()}]`}
+                            </p>
+                          ) : null}
 
-                    <div className="mt-3 max-w-xl rounded-2xl border border-slate-200 bg-slate-50 p-3 space-y-2">
-                      {header ? (
-                        <div className="text-sm">
-                          <p className="text-[10px] uppercase tracking-wide text-slate-400 mb-1">Header {String(header.format || "TEXT").toUpperCase()}</p>
-                          {String(header.format || "").toUpperCase() === "TEXT"
-                            ? <p className="whitespace-pre-wrap">{resolvedHeaderText || "(sin texto)"}</p>
-                            : <p className="text-slate-600">[Contenido multimedia: {String(header.format || "MEDIA").toUpperCase()}]</p>}
+                          <div className={`whitespace-pre-wrap text-slate-900 ${header ? "mt-2" : ""}`} style={{ fontSize: "40px", lineHeight: 1.2 }}>
+                            {resolvedBodyText || (required > 0 ? "—" : "No hay BODY en esta plantilla.")}
+                          </div>
+
+                          {resolvedFooterText ? (
+                            <p className="mt-3 text-[36px] leading-tight text-slate-500 whitespace-pre-wrap">{resolvedFooterText}</p>
+                          ) : null}
+
+                          <div className="mt-2 flex justify-end text-[34px] text-slate-500">
+                            {previewTime}
+                          </div>
                         </div>
-                      ) : null}
 
-                      <div className="text-sm whitespace-pre-wrap leading-relaxed text-slate-900">
-                        {resolvedBodyText || (required > 0 ? "—" : "No hay BODY en esta plantilla.")}
-                      </div>
-
-                      {resolvedFooterText ? (
-                        <div className="text-xs text-slate-500 whitespace-pre-wrap">{resolvedFooterText}</div>
-                      ) : null}
-
-                      {Array.isArray(buttons?.buttons) && buttons!.buttons!.length > 0 ? (
-                        <div className="pt-1 space-y-1.5">
-                          {buttons!.buttons!.map((b, idx) => (
-                            <div
-                              key={`ms-prev-btn-${idx}`}
-                              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 text-center"
-                            >
-                              {b.text || "Botón"}
+                        {hasButtons ? (
+                          <div className="mt-1.5 max-w-[700px]">
+                            <div className="grid grid-cols-2 gap-1.5">
+                              {buttons!.buttons!.map((b, idx) => (
+                                <button
+                                  key={`ms-prev-btn-${idx}`}
+                                  type="button"
+                                  className={`rounded-xl border border-slate-300 bg-white px-3 py-2 text-[34px] leading-tight text-[#0f9d58] ${buttons!.buttons!.length % 2 === 1 && idx === buttons!.buttons!.length - 1 ? "col-span-2" : ""}`}
+                                  disabled
+                                >
+                                  {b.text || "Botón"}
+                                </button>
+                              ))}
                             </div>
-                          ))}
-                        </div>
-                      ) : null}
+                          </div>
+                        ) : null}
+                      </div>
                     </div>
 
                     {required > 0 ? (
