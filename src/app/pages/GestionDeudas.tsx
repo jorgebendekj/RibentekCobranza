@@ -148,6 +148,40 @@ export function GestionDeudas() {
 
   const fmt = (v: number) => v.toLocaleString("es-BO", { minimumFractionDigits: 0 });
 
+  const approvedTemplates = useMemo(
+    () => templates.filter((template) => String(template.meta_status || "").toUpperCase() === "APPROVED"),
+    [templates]
+  );
+
+  const selectedTemplate = useMemo(
+    () => approvedTemplates.find((template) => template.id === templateId) ?? null,
+    [approvedTemplates, templateId]
+  );
+
+  const allowedLanguagesForTemplate = useMemo(() => {
+    if (!selectedTemplate) return [] as string[];
+    const sameNameApproved = approvedTemplates
+      .filter((template) => template.template_name === selectedTemplate.template_name)
+      .map((template) => String(template.language || "").trim())
+      .filter(Boolean);
+    return Array.from(new Set(sameNameApproved));
+  }, [approvedTemplates, selectedTemplate]);
+
+  const handleTemplateChange = (value: string) => {
+    setTemplateId(value);
+    const next = approvedTemplates.find((template) => template.id === value) ?? null;
+    if (!next) return;
+    const langs = Array.from(
+      new Set(
+        approvedTemplates
+          .filter((template) => template.template_name === next.template_name)
+          .map((template) => String(template.language || "").trim())
+          .filter(Boolean)
+      )
+    );
+    setLanguage(langs[0] || String(next.language || "es_LA"));
+  };
+
   const exportToExcel = () => {
     const data = debtDetails.map(d => ({
       ID: d.id.slice(0, 8),
@@ -652,13 +686,12 @@ export function GestionDeudas() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="mass-template">Plantilla aprobada</Label>
-                <Select value={templateId} onValueChange={setTemplateId}>
+                <Select value={templateId} onValueChange={handleTemplateChange}>
                   <SelectTrigger id="mass-template"><SelectValue placeholder="Selecciona plantilla" /></SelectTrigger>
                   <SelectContent>
-                    {templates.map((template) => (
+                    {approvedTemplates.map((template) => (
                       <SelectItem key={template.id} value={template.id}>
-                        {template.template_name}
-                        {String(template.meta_status || "").toUpperCase() !== "APPROVED" ? " (no aprobada)" : ""}
+                        {template.template_name} · {template.language}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -666,7 +699,22 @@ export function GestionDeudas() {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="mass-language">Idioma</Label>
-                <Input id="mass-language" value={language} onChange={(e) => setLanguage(e.target.value)} />
+                <Select
+                  value={language}
+                  onValueChange={setLanguage}
+                  disabled={!templateId || allowedLanguagesForTemplate.length === 0}
+                >
+                  <SelectTrigger id="mass-language">
+                    <SelectValue placeholder="Selecciona idioma aprobado" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {allowedLanguagesForTemplate.map((lang) => (
+                      <SelectItem key={lang} value={lang}>
+                        {lang}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="mass-mode">Modo</Label>
