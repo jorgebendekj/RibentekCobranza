@@ -890,43 +890,40 @@ export function GestionDeudas() {
                     <div
                       className="p-4"
                       style={{
-                        backgroundColor: "#efeae2",
-                        backgroundImage:
-                          "radial-gradient(circle at 25px 25px, rgba(0,0,0,0.045) 1.2px, transparent 0), radial-gradient(circle at 75px 75px, rgba(0,0,0,0.04) 1px, transparent 0)",
-                        backgroundSize: "100px 100px",
+                        background: "#efe7dd url('https://cloud.githubusercontent.com/assets/398893/15136779/4e765036-1639-11e6-9201-67e728e86f39.jpg') repeat",
                       }}
                     >
-                      <div className="mx-auto max-w-[760px]">
-                        <div className="max-w-[700px] rounded-2xl border border-slate-300/80 bg-[#f7f7f7] px-4 py-3 shadow-[0_1px_0_rgba(0,0,0,0.08)]">
+                      <div className="mx-auto max-w-[760px] font-sans">
+                        <div className="max-w-[680px] rounded-[0_6px_6px_6px] border border-[#d8d8d8] bg-[#ffffff] px-3 py-2 shadow-[0_1px_0_rgba(0,0,0,0.08)]">
                           {header ? (
-                            <p className="text-[42px] leading-[1.15] font-semibold text-slate-900 whitespace-pre-wrap">
+                            <p className="text-[28px] leading-[1.18] font-semibold text-[#111b21] whitespace-pre-wrap">
                               {String(header.format || "").toUpperCase() === "TEXT"
                                 ? (resolvedHeaderText || "")
                                 : `[${String(header.format || "MEDIA").toUpperCase()}]`}
                             </p>
                           ) : null}
 
-                          <div className={`whitespace-pre-wrap text-slate-900 ${header ? "mt-2" : ""}`} style={{ fontSize: "40px", lineHeight: 1.2 }}>
+                          <div className={`whitespace-pre-wrap text-[#111b21] ${header ? "mt-1.5" : ""}`} style={{ fontSize: "15px", lineHeight: 1.35 }}>
                             {resolvedBodyText || (required > 0 ? "—" : "No hay BODY en esta plantilla.")}
                           </div>
 
                           {resolvedFooterText ? (
-                            <p className="mt-3 text-[36px] leading-tight text-slate-500 whitespace-pre-wrap">{resolvedFooterText}</p>
+                            <p className="mt-2 text-[12px] leading-tight text-[#667781] whitespace-pre-wrap">{resolvedFooterText}</p>
                           ) : null}
 
-                          <div className="mt-2 flex justify-end text-[34px] text-slate-500">
+                          <div className="mt-1.5 flex justify-end text-[11px] text-[#667781]">
                             {previewTime}
                           </div>
                         </div>
 
                         {hasButtons ? (
-                          <div className="mt-1.5 max-w-[700px]">
+                          <div className="mt-1.5 max-w-[680px]">
                             <div className="grid grid-cols-2 gap-1.5">
                               {buttons!.buttons!.map((b, idx) => (
                                 <button
                                   key={`ms-prev-btn-${idx}`}
                                   type="button"
-                                  className={`rounded-xl border border-slate-300 bg-white px-3 py-2 text-[34px] leading-tight text-[#0f9d58] ${buttons!.buttons!.length % 2 === 1 && idx === buttons!.buttons!.length - 1 ? "col-span-2" : ""}`}
+                                  className={`rounded-[10px] border border-[#d0d7de] bg-[#f7f8fa] px-3 py-2 text-[14px] font-medium leading-tight text-[#1f9d62] ${buttons!.buttons!.length % 2 === 1 && idx === buttons!.buttons!.length - 1 ? "col-span-2" : ""}`}
                                   disabled
                                 >
                                   {b.text || "Botón"}
