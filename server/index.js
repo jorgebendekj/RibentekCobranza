@@ -577,11 +577,12 @@ app.post('/webhooks/meta', async (req, res) => {
           console.log('[webhook] messages count:', value.messages.length);
           for (const msg of value.messages) {
             const from = msg.from;
+            const fromPhone = normalizeWhatsAppPhone(from);
             const inbound = await buildInboundRichMessage({ msg, token: config?.token || null });
             const text = inbound.payload?.text || msg.text?.body || msg.type || '';
-            console.log('[webhook] msg from:', from, '| type:', msg.type, '| text:', text.slice(0, 80));
+            console.log('[webhook] msg from:', from, '| normalized:', fromPhone, '| type:', msg.type, '| text:', text.slice(0, 80));
 
-            if (!config || !from) {
+            if (!config || !fromPhone) {
               console.warn('[webhook] skipping message — no config or no from');
               continue;
             }
@@ -594,7 +595,7 @@ app.post('/webhooks/meta', async (req, res) => {
               .from('contacts')
               .select('id')
               .eq('tenant_id', tenantId)
-              .eq('phone_number', from)
+              .eq('phone_number', fromPhone)
               .is('deleted_at', null)
               .maybeSingle();
             if (cErr) console.error('[webhook] contact lookup error:', cErr.message);
@@ -607,7 +608,7 @@ app.post('/webhooks/meta', async (req, res) => {
               const displayName = value.contacts?.[0]?.profile?.name ?? from;
               const { data: newContact, error: ncErr } = await supabaseAdmin
                 .from('contacts')
-                .insert({ name: displayName, phone_number: from, tenant_id: tenantId })
+                .insert({ name: displayName, phone_number: fromPhone, tenant_id: tenantId })
                 .select('id')
                 .single();
               if (ncErr) console.error('[webhook] contact insert error:', ncErr.message);
@@ -630,14 +631,18 @@ app.post('/webhooks/meta', async (req, res) => {
             if (existingThread) {
               threadId = existingThread.id;
             } else {
-              const { data: newThread, error: ntErr } = await supabaseAdmin
+              // Avoid duplicate threads: create-or-reuse via upsert
+              const { data: upsertedThread, error: ntErr } = await supabaseAdmin
                 .from('whatsapp_threads')
-                .insert({ contact_id: contactId, tenant_id: tenantId, last_message: text, last_interaction: new Date().toISOString() })
+                .upsert(
+                  { contact_id: contactId, tenant_id: tenantId, last_message: text, last_interaction: new Date().toISOString() },
+                  { onConflict: 'tenant_id,contact_id' }
+                )
                 .select('id')
                 .single();
-              if (ntErr) console.error('[webhook] thread insert error:', ntErr.message);
-              threadId = newThread?.id;
-              console.log('[webhook] created thread:', threadId);
+              if (ntErr) console.error('[webhook] thread upsert error:', ntErr.message);
+              threadId = upsertedThread?.id;
+              console.log('[webhook] upserted thread:', threadId);
             }
             if (!threadId) { console.error('[webhook] no threadId, skipping'); continue; }
 
