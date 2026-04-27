@@ -248,7 +248,11 @@ export function Bandeja() {
 
   const onThreadsUpdate = useCallback(() => {
     qc.invalidateQueries({ queryKey: [THREADS_KEY, tenantId] });
-  }, [qc, tenantId]);
+    // Incoming messages update whatsapp_threads in realtime; ensure the open thread refetches messages
+    if (selectedThreadId) {
+      qc.invalidateQueries({ queryKey: [MESSAGES_KEY, selectedThreadId] });
+    }
+  }, [qc, tenantId, selectedThreadId]);
   useRealtimeThreads(tenantId, onThreadsUpdate);
 
   // Mark-read when selecting thread

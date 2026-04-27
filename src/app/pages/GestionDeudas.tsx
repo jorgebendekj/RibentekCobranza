@@ -849,16 +849,13 @@ export function GestionDeudas() {
 
           {currentStep === 4 ? (
             <div className="space-y-3">
-              <Button onClick={runPreview} disabled={previewMutation.isPending}>
-                {previewMutation.isPending ? "Recalculando..." : "Revalidar preview"}
-              </Button>
-              <div className="rounded-md border p-3 text-sm space-y-1">
-                <p>Envío: <span className="font-medium">{massSendName || "—"}</span></p>
-                <p>Plantilla: <span className="font-medium">{templates.find((template) => template.id === templateId)?.template_name || "—"}</span></p>
-                <p>Modo: <span className="font-medium">{massSendMode === "manual" ? "Manual" : "Programado"}</span></p>
-                <p>Total final estimado: <span className="font-semibold">{effectiveTotalRecipients}</span></p>
+              <div className="rounded-md border px-2.5 py-2 text-xs text-slate-600 space-y-0.5 leading-snug">
+                <p><span className="text-slate-500">Envío</span> <span className="font-medium text-slate-800">{massSendName || "—"}</span></p>
+                <p><span className="text-slate-500">Plantilla</span> <span className="font-medium text-slate-800">{templates.find((template) => template.id === templateId)?.template_name || "—"}</span></p>
+                <p><span className="text-slate-500">Modo</span> <span className="font-medium text-slate-800">{massSendMode === "manual" ? "Manual" : "Programado"}</span></p>
+                <p><span className="text-slate-500">Total</span> <span className="font-semibold text-slate-900">{effectiveTotalRecipients}</span></p>
                 {effectiveTotalRecipients <= 0 ? (
-                  <p className="text-amber-700">Advertencia: no hay destinatarios estimados para enviar.</p>
+                  <p className="text-amber-700">Sin destinatarios estimados.</p>
                 ) : null}
               </div>
               {(() => {
