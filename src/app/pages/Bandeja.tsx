@@ -35,6 +35,30 @@ function useDebounce<T>(value: T, ms = 350): T {
   return debounced;
 }
 
+const RICH_MSG_PREFIX = "__AIC_MSG__";
+type RichMessage = {
+  kind: "text" | "image" | "audio" | "video" | "document" | "template" | "interactive" | "button" | string;
+  text?: string;
+  media_url?: string | null;
+  filename?: string | null;
+  mime_type?: string | null;
+  caption?: string | null;
+  template_name?: string | null;
+  language?: string | null;
+  components?: Array<Record<string, unknown>>;
+};
+
+function parseRichMessage(raw: string | null): RichMessage | null {
+  const text = String(raw || "");
+  if (!text.startsWith(RICH_MSG_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(text.slice(RICH_MSG_PREFIX.length));
+    return parsed as RichMessage;
+  } catch {
+    return null;
+  }
+}
+
 type SendComposerProps = {
   activePhone: string;
   isWindowOpen: boolean;
@@ -698,6 +722,12 @@ export function Bandeja() {
                     ) : (
                       allMessages.map((msg) => {
                         const isAgent = !msg.incoming;
+                        const rich = parseRichMessage(msg.message_text);
+                        const messageText = rich?.text || msg.message_text || "";
+                        const mediaUrl = rich?.media_url || msg.media_url || null;
+                        const templateName = rich?.kind === "template" ? rich?.template_name : null;
+                        const templateLang = rich?.kind === "template" ? rich?.language : null;
+                        const templateComponents = Array.isArray(rich?.components) ? rich?.components : [];
                         return (
                           <div
                             key={msg.id}
@@ -721,7 +751,76 @@ export function Bandeja() {
                                   <Bot className="size-3" /> Agente
                                 </p>
                               )}
-                              <p className="text-sm whitespace-pre-wrap leading-relaxed">{msg.message_text}</p>
+                              {rich?.kind === "template" ? (
+                                <div className="space-y-2">
+                                  <div className={`text-[10px] uppercase tracking-wide ${isAgent ? "text-blue-200" : "text-slate-500"}`}>
+                                    Plantilla{templateName ? ` · ${templateName}` : ""}{templateLang ? ` · ${templateLang}` : ""}
+                                  </div>
+                                  <div className={`rounded-lg border px-3 py-2 text-sm ${isAgent ? "border-blue-400/40 bg-blue-500/30" : "border-slate-200 bg-slate-50"}`}>
+                                    <p className="whitespace-pre-wrap leading-relaxed">{messageText || "[Template enviado]"}</p>
+                                  </div>
+                                  {templateComponents.length > 0 ? (
+                                    <div className={`rounded-lg border px-3 py-2 text-xs ${isAgent ? "border-blue-400/40 bg-blue-500/20 text-blue-100" : "border-slate-200 bg-white text-slate-600"}`}>
+                                      {templateComponents.map((c, idx) => (
+                                        <p key={idx} className="truncate">• {String((c as { type?: string }).type || "component")}</p>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : rich?.kind === "image" ? (
+                                <div className="space-y-2">
+                                  {mediaUrl ? (
+                                    <a href={mediaUrl} target="_blank" rel="noreferrer">
+                                      <img src={mediaUrl} alt="Imagen recibida" className="max-h-64 w-full rounded-lg object-cover border border-black/10" />
+                                    </a>
+                                  ) : (
+                                    <div className={`rounded-lg border px-3 py-2 text-xs ${isAgent ? "border-blue-300/40 bg-blue-500/20 text-blue-100" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
+                                      Imagen recibida (sin URL disponible)
+                                    </div>
+                                  )}
+                                  {messageText ? <p className="text-sm whitespace-pre-wrap leading-relaxed">{messageText}</p> : null}
+                                </div>
+                              ) : rich?.kind === "audio" ? (
+                                <div className="space-y-2">
+                                  {mediaUrl ? (
+                                    <audio controls className="w-full">
+                                      <source src={mediaUrl} type={rich?.mime_type || "audio/mpeg"} />
+                                    </audio>
+                                  ) : (
+                                    <div className={`rounded-lg border px-3 py-2 text-xs ${isAgent ? "border-blue-300/40 bg-blue-500/20 text-blue-100" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
+                                      Audio recibido (sin URL reproducible)
+                                    </div>
+                                  )}
+                                  {messageText ? <p className="text-xs opacity-80">{messageText}</p> : null}
+                                </div>
+                              ) : rich?.kind === "video" ? (
+                                <div className="space-y-2">
+                                  {mediaUrl ? (
+                                    <video controls className="max-h-64 w-full rounded-lg border border-black/10">
+                                      <source src={mediaUrl} type={rich?.mime_type || "video/mp4"} />
+                                    </video>
+                                  ) : (
+                                    <div className={`rounded-lg border px-3 py-2 text-xs ${isAgent ? "border-blue-300/40 bg-blue-500/20 text-blue-100" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
+                                      Video recibido (sin URL disponible)
+                                    </div>
+                                  )}
+                                  {messageText ? <p className="text-sm whitespace-pre-wrap leading-relaxed">{messageText}</p> : null}
+                                </div>
+                              ) : rich?.kind === "document" ? (
+                                <div className="space-y-2">
+                                  <div className={`rounded-lg border px-3 py-2 text-sm ${isAgent ? "border-blue-300/40 bg-blue-500/20 text-blue-50" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
+                                    Documento{rich?.filename ? `: ${rich.filename}` : ""}
+                                  </div>
+                                  {mediaUrl ? (
+                                    <a href={mediaUrl} target="_blank" rel="noreferrer" className={`text-xs underline ${isAgent ? "text-blue-100" : "text-blue-700"}`}>
+                                      Abrir documento
+                                    </a>
+                                  ) : null}
+                                  {messageText ? <p className="text-xs opacity-80">{messageText}</p> : null}
+                                </div>
+                              ) : (
+                                <p className="text-sm whitespace-pre-wrap leading-relaxed">{messageText}</p>
+                              )}
                               <div className={`flex items-center justify-end gap-1.5 mt-1.5 ${isAgent ? "text-blue-200" : "text-slate-400"}`}>
                                 <span className="text-[10px]">
                                   {new Date(msg.sent_at ?? msg.created_at).toLocaleTimeString("es", {

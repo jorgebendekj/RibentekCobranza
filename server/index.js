@@ -24,6 +24,7 @@ const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v23.0';
 const INVITE_EMAIL_WINDOW_MS = 60 * 1000;
 const INVITE_EMAIL_MAX_ATTEMPTS = 5;
 const inviteRateLimitByActor = new Map();
+const RICH_MSG_PREFIX = '__AIC_MSG__';
 
 function enforceInviteRateLimit(actorKey) {
   const now = Date.now();
@@ -42,6 +43,117 @@ function enforceInviteRateLimit(actorKey) {
 function getInviteUrl(inviteId) {
   const appBaseUrl = process.env.APP_BASE_URL || process.env.FRONTEND_URL || 'http://localhost:5173';
   return `${appBaseUrl}/invite?token=${inviteId}`;
+}
+
+function encodeRichMessage(payload) {
+  try {
+    return `${RICH_MSG_PREFIX}${JSON.stringify(payload)}`;
+  } catch {
+    return payload?.text || null;
+  }
+}
+
+function decodeRichMessage(messageText) {
+  const raw = String(messageText || '');
+  if (!raw.startsWith(RICH_MSG_PREFIX)) return null;
+  try {
+    return JSON.parse(raw.slice(RICH_MSG_PREFIX.length));
+  } catch {
+    return null;
+  }
+}
+
+async function resolveMetaMediaUrl({ token, mediaId }) {
+  if (!token || !mediaId) return null;
+  try {
+    const metaRes = await fetch(`https://graph.facebook.com/${META_GRAPH_VERSION}/${encodeURIComponent(mediaId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const metaData = await metaRes.json();
+    if (!metaRes.ok) return null;
+    return metaData?.url || null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildInboundRichMessage({ msg, token }) {
+  const kind = String(msg?.type || 'text').toLowerCase();
+  const timestampIso = msg?.timestamp ? new Date(Number(msg.timestamp) * 1000).toISOString() : new Date().toISOString();
+
+  if (kind === 'text') {
+    const text = String(msg?.text?.body || '').trim();
+    return {
+      message_text: text || 'Mensaje',
+      media_url: null,
+      payload: {
+        kind: 'text',
+        text,
+        ts: timestampIso,
+      },
+    };
+  }
+
+  if (['image', 'audio', 'video', 'document'].includes(kind)) {
+    const mediaNode = msg?.[kind] || {};
+    const mediaId = mediaNode?.id || null;
+    const mediaUrl = mediaNode?.link || await resolveMetaMediaUrl({ token, mediaId });
+    const caption = String(mediaNode?.caption || '').trim();
+    const filename = String(mediaNode?.filename || '').trim();
+    const mimeType = String(mediaNode?.mime_type || '').trim();
+
+    const preview = caption || filename || `${kind} recibido`;
+    return {
+      message_text: encodeRichMessage({
+        kind,
+        caption,
+        filename,
+        mime_type: mimeType || null,
+        media_id: mediaId,
+        media_url: mediaUrl,
+        text: preview,
+        ts: timestampIso,
+      }),
+      media_url: mediaUrl,
+      payload: {
+        kind,
+        caption,
+        filename,
+        mime_type: mimeType || null,
+        media_id: mediaId,
+        media_url: mediaUrl,
+        text: preview,
+        ts: timestampIso,
+      },
+    };
+  }
+
+  if (kind === 'button') {
+    const text = String(msg?.button?.text || 'Respuesta por botón').trim();
+    return {
+      message_text: encodeRichMessage({ kind: 'button', text, ts: timestampIso }),
+      media_url: null,
+      payload: { kind: 'button', text, ts: timestampIso },
+    };
+  }
+
+  if (kind === 'interactive') {
+    const btnReply = msg?.interactive?.button_reply;
+    const listReply = msg?.interactive?.list_reply;
+    const text = String(btnReply?.title || listReply?.title || 'Respuesta interactiva').trim();
+    return {
+      message_text: encodeRichMessage({ kind: 'interactive', text, ts: timestampIso }),
+      media_url: null,
+      payload: { kind: 'interactive', text, ts: timestampIso },
+    };
+  }
+
+  const fallbackText = String(msg?.text?.body || kind || 'Mensaje recibido');
+  return {
+    message_text: encodeRichMessage({ kind, text: fallbackText, ts: timestampIso }),
+    media_url: null,
+    payload: { kind, text: fallbackText, ts: timestampIso },
+  };
 }
 
 async function sendInviteEmail(email, inviteUrl) {
@@ -465,7 +577,8 @@ app.post('/webhooks/meta', async (req, res) => {
           console.log('[webhook] messages count:', value.messages.length);
           for (const msg of value.messages) {
             const from = msg.from;
-            const text = msg.text?.body ?? msg.type ?? '';
+            const inbound = await buildInboundRichMessage({ msg, token: config?.token || null });
+            const text = inbound.payload?.text || msg.text?.body || msg.type || '';
             console.log('[webhook] msg from:', from, '| type:', msg.type, '| text:', text.slice(0, 80));
 
             if (!config || !from) {
@@ -533,7 +646,8 @@ app.post('/webhooks/meta', async (req, res) => {
               .from('whatsapp_messages')
               .insert({
                 whatsapp_thread_id: threadId,
-                message_text: text,
+                  message_text: inbound.message_text,
+                  media_url: inbound.media_url,
                 incoming: true,
                 read: false,
                 sent_at: msg.timestamp ? new Date(Number(msg.timestamp) * 1000).toISOString() : new Date().toISOString(),
@@ -848,11 +962,20 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
     }
 
     const savedText = `[TPL] ${approvedTemplate.template_name}`;
+    const templatePreviewBody = components?.[0]?.parameters?.map((p) => p?.text).filter(Boolean).join(' | ') || '';
+    const richTemplatePayload = encodeRichMessage({
+      kind: 'template',
+      template_name: approvedTemplate.template_name,
+      language: String(language || approvedTemplate.language || config.default_template_language || 'es_LA'),
+      components: components || [],
+      text: templatePreviewBody || savedText,
+      ts: new Date().toISOString(),
+    });
     const { data: saved } = await supabaseAdmin
       .from('whatsapp_messages')
       .insert({
         whatsapp_thread_id: resolvedThreadId,
-        message_text: savedText,
+        message_text: richTemplatePayload,
         incoming: false,
         read: false,
         sent_at: new Date().toISOString(),
@@ -904,6 +1027,8 @@ function conversationStateFromLastInteraction(lastInteraction) {
 }
 
 function extractTemplateName(messageText) {
+  const rich = decodeRichMessage(messageText);
+  if (rich?.kind === 'template' && rich?.template_name) return String(rich.template_name).trim();
   const text = String(messageText || '').trim();
   if (!text.startsWith('[TPL]')) return null;
   return text.replace(/^\[TPL\]\s*/i, '').trim() || null;
@@ -1741,12 +1866,21 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
         });
         const resolvedThreadId = resolved.threadId;
         const savedText = `[MASIVO] ${runtimeTemplateName}`;
+        const templatePreviewBody = effectiveParams.join(' | ');
+        const richTemplatePayload = encodeRichMessage({
+          kind: 'template',
+          template_name: runtimeTemplateName,
+          language: runtimeLanguage,
+          components: components || [],
+          text: templatePreviewBody || savedText,
+          ts: new Date().toISOString(),
+        });
 
         const { data: savedMessage } = await supabaseAdmin
           .from('whatsapp_messages')
           .insert({
             whatsapp_thread_id: resolvedThreadId,
-            message_text: savedText,
+            message_text: richTemplatePayload,
             incoming: false,
             read: false,
             sent_at: new Date().toISOString(),
