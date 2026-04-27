@@ -1029,6 +1029,53 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
   }
 });
 
+/**
+ * GET /api/meta/media/:mediaId
+ * Secure proxy for WhatsApp media that requires workspace membership.
+ * Prevents exposing Graph API auth errors in the browser.
+ */
+app.get('/api/meta/media/:mediaId', requireWorkspaceMember, async (req, res) => {
+  const { tenantId } = req.workspaceMember;
+  const mediaId = String(req.params.mediaId || '').trim();
+  if (!mediaId) return res.status(400).json({ error: 'mediaId is required' });
+
+  try {
+    const { data: config, error: cfgErr } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('token')
+      .eq('tenant_id', tenantId)
+      .is('deleted_at', null)
+      .maybeSingle();
+    if (cfgErr || !config?.token) {
+      return res.status(400).json({ error: 'WhatsApp configuration token not found for workspace' });
+    }
+
+    const headers = { Authorization: `Bearer ${config.token}` };
+    const metaRes = await fetch(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/${encodeURIComponent(mediaId)}`,
+      { headers }
+    );
+    const metaData = await metaRes.json();
+    if (!metaRes.ok || !metaData?.url) {
+      return res.status(metaRes.status || 400).json({ error: metaData?.error?.message || 'Unable to resolve media URL' });
+    }
+
+    const fileRes = await fetch(metaData.url, { headers });
+    if (!fileRes.ok) {
+      const fallback = await fileRes.text().catch(() => '');
+      return res.status(fileRes.status || 400).json({ error: fallback || 'Unable to download media file' });
+    }
+
+    const contentType = fileRes.headers.get('content-type') || 'application/octet-stream';
+    const buffer = Buffer.from(await fileRes.arrayBuffer());
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    return res.status(200).send(buffer);
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Unexpected media proxy error' });
+  }
+});
+
 function toDayKey(isoDate) {
   return new Date(isoDate).toISOString().slice(0, 10);
 }

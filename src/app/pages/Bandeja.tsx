@@ -22,8 +22,10 @@ import {
 } from "../hooks/useThreads";
 import { threadsService } from "../services/threads.service";
 import { whatsappService } from "../services/whatsapp.service";
+import { getAdminApiBase } from "../services/admin.service";
 import { useAuth } from "../context/AuthContext";
 import type { ThreadWithContact, Contact } from "../data/supabase.types";
+import { supabase } from "../../lib/supabase";
 
 // ── Small helper: debounce ──────────────────────────────────────
 function useDebounce<T>(value: T, ms = 350): T {
@@ -45,6 +47,7 @@ type RichMessage = {
   caption?: string | null;
   template_name?: string | null;
   language?: string | null;
+  media_id?: string | null;
   components?: Array<Record<string, unknown>>;
   template_components?: Array<Record<string, unknown>>;
   sent_components?: Array<Record<string, unknown>>;
@@ -195,6 +198,94 @@ function SendComposer({
         )}
       </Button>
     </div>
+  );
+}
+
+function ProtectedMedia({
+  mediaId,
+  fallbackUrl,
+  mimeType,
+  kind,
+  isAgent,
+}: {
+  mediaId?: string | null;
+  fallbackUrl?: string | null;
+  mimeType?: string | null;
+  kind: "image" | "audio" | "video" | "document";
+  isAgent: boolean;
+}) {
+  const { tenantId } = useAuth();
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(fallbackUrl || null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    const run = async () => {
+      if (!mediaId || !tenantId) {
+        setResolvedUrl(fallbackUrl || null);
+        return;
+      }
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        if (!token) throw new Error("No session");
+        const adminBase = getAdminApiBase();
+        const res = await fetch(`${adminBase}/api/meta/media/${encodeURIComponent(mediaId)}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "x-tenant-id": tenantId,
+          },
+        });
+        if (!res.ok) throw new Error("proxy failed");
+        const blob = await res.blob();
+        objectUrl = URL.createObjectURL(blob);
+        if (!cancelled) setResolvedUrl(objectUrl);
+      } catch {
+        if (!cancelled) setResolvedUrl(fallbackUrl || null);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [mediaId, tenantId, fallbackUrl]);
+
+  if (!resolvedUrl) {
+    return (
+      <div className={`rounded-lg border px-3 py-2 text-xs ${isAgent ? "border-blue-300/40 bg-blue-500/20 text-blue-100" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
+        {kind === "image" ? "Imagen recibida (sin URL disponible)" : kind === "audio" ? "Audio recibido (sin URL reproducible)" : kind === "video" ? "Video recibido (sin URL disponible)" : "Documento recibido (sin URL disponible)"}
+      </div>
+    );
+  }
+
+  if (kind === "image") {
+    return (
+      <a href={resolvedUrl} target="_blank" rel="noreferrer">
+        <img src={resolvedUrl} alt="Imagen recibida" className="max-h-64 w-full rounded-lg object-cover border border-black/10" />
+      </a>
+    );
+  }
+  if (kind === "audio") {
+    return (
+      <audio controls className="w-full">
+        <source src={resolvedUrl} type={mimeType || "audio/mpeg"} />
+      </audio>
+    );
+  }
+  if (kind === "video") {
+    return (
+      <video controls className="max-h-64 w-full rounded-lg border border-black/10">
+        <source src={resolvedUrl} type={mimeType || "video/mp4"} />
+      </video>
+    );
+  }
+  return (
+    <a href={resolvedUrl} target="_blank" rel="noreferrer" className={`text-xs underline ${isAgent ? "text-blue-100" : "text-blue-700"}`}>
+      Abrir documento
+    </a>
   );
 }
 
@@ -867,41 +958,17 @@ export function Bandeja() {
                                 </div>
                               ) : rich?.kind === "image" ? (
                                 <div className="space-y-2">
-                                  {mediaUrl ? (
-                                    <a href={mediaUrl} target="_blank" rel="noreferrer">
-                                      <img src={mediaUrl} alt="Imagen recibida" className="max-h-64 w-full rounded-lg object-cover border border-black/10" />
-                                    </a>
-                                  ) : (
-                                    <div className={`rounded-lg border px-3 py-2 text-xs ${isAgent ? "border-blue-300/40 bg-blue-500/20 text-blue-100" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
-                                      Imagen recibida (sin URL disponible)
-                                    </div>
-                                  )}
+                                  <ProtectedMedia mediaId={rich?.media_id} fallbackUrl={mediaUrl} mimeType={rich?.mime_type} kind="image" isAgent={isAgent} />
                                   {messageText ? <p className="text-sm whitespace-pre-wrap leading-relaxed">{messageText}</p> : null}
                                 </div>
                               ) : rich?.kind === "audio" ? (
                                 <div className="space-y-2">
-                                  {mediaUrl ? (
-                                    <audio controls className="w-full">
-                                      <source src={mediaUrl} type={rich?.mime_type || "audio/mpeg"} />
-                                    </audio>
-                                  ) : (
-                                    <div className={`rounded-lg border px-3 py-2 text-xs ${isAgent ? "border-blue-300/40 bg-blue-500/20 text-blue-100" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
-                                      Audio recibido (sin URL reproducible)
-                                    </div>
-                                  )}
+                                  <ProtectedMedia mediaId={rich?.media_id} fallbackUrl={mediaUrl} mimeType={rich?.mime_type} kind="audio" isAgent={isAgent} />
                                   {messageText ? <p className="text-xs opacity-80">{messageText}</p> : null}
                                 </div>
                               ) : rich?.kind === "video" ? (
                                 <div className="space-y-2">
-                                  {mediaUrl ? (
-                                    <video controls className="max-h-64 w-full rounded-lg border border-black/10">
-                                      <source src={mediaUrl} type={rich?.mime_type || "video/mp4"} />
-                                    </video>
-                                  ) : (
-                                    <div className={`rounded-lg border px-3 py-2 text-xs ${isAgent ? "border-blue-300/40 bg-blue-500/20 text-blue-100" : "border-slate-200 bg-slate-50 text-slate-600"}`}>
-                                      Video recibido (sin URL disponible)
-                                    </div>
-                                  )}
+                                  <ProtectedMedia mediaId={rich?.media_id} fallbackUrl={mediaUrl} mimeType={rich?.mime_type} kind="video" isAgent={isAgent} />
                                   {messageText ? <p className="text-sm whitespace-pre-wrap leading-relaxed">{messageText}</p> : null}
                                 </div>
                               ) : rich?.kind === "document" ? (
@@ -909,11 +976,7 @@ export function Bandeja() {
                                   <div className={`rounded-lg border px-3 py-2 text-sm ${isAgent ? "border-blue-300/40 bg-blue-500/20 text-blue-50" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
                                     Documento{rich?.filename ? `: ${rich.filename}` : ""}
                                   </div>
-                                  {mediaUrl ? (
-                                    <a href={mediaUrl} target="_blank" rel="noreferrer" className={`text-xs underline ${isAgent ? "text-blue-100" : "text-blue-700"}`}>
-                                      Abrir documento
-                                    </a>
-                                  ) : null}
+                                  <ProtectedMedia mediaId={rich?.media_id} fallbackUrl={mediaUrl} mimeType={rich?.mime_type} kind="document" isAgent={isAgent} />
                                   {messageText ? <p className="text-xs opacity-80">{messageText}</p> : null}
                                 </div>
                               ) : (
