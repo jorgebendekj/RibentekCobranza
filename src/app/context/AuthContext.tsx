@@ -45,9 +45,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       else setIsLoading(false);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
       if (session) {
+        // Avoid global loading flashes when returning to a focused tab.
+        // TOKEN_REFRESHED is frequent and does not require reloading full app profile/workspaces.
+        if (event === 'TOKEN_REFRESHED') return;
         loadAuthState(session.user.id);
       } else {
         setDbUser(null);
