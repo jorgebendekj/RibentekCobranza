@@ -53,6 +53,41 @@ function encodeRichMessage(payload) {
   }
 }
 
+const MESSAGE_TEXT_DB_MAX_LEN = 1000;
+
+function buildTemplateRichMessageForDb(payload, fallbackText = '') {
+  const safeText = String(payload?.text || fallbackText || '').slice(0, 320);
+  const safeTemplateName = String(payload?.template_name || '').slice(0, 120);
+  const safeLanguage = String(payload?.language || '').slice(0, 32);
+  const safeTs = payload?.ts || new Date().toISOString();
+
+  const candidates = [
+    payload,
+    {
+      kind: 'template',
+      template_name: safeTemplateName,
+      language: safeLanguage,
+      text: safeText,
+      ts: safeTs,
+      sent_components: Array.isArray(payload?.sent_components) ? payload.sent_components : [],
+    },
+    {
+      kind: 'template',
+      template_name: safeTemplateName,
+      language: safeLanguage,
+      text: safeText || `[TPL] ${safeTemplateName || 'template'}`,
+      ts: safeTs,
+    },
+  ];
+
+  for (const candidate of candidates) {
+    const encoded = encodeRichMessage(candidate);
+    if (encoded && encoded.length <= MESSAGE_TEXT_DB_MAX_LEN) return encoded;
+  }
+
+  return String(safeText || fallbackText || `[TPL] ${safeTemplateName || 'template'}`).slice(0, MESSAGE_TEXT_DB_MAX_LEN);
+}
+
 function decodeRichMessage(messageText) {
   const raw = String(messageText || '');
   if (!raw.startsWith(RICH_MSG_PREFIX)) return null;
@@ -980,7 +1015,7 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
 
     const savedText = `[TPL] ${approvedTemplate.template_name}`;
     const templatePreviewBody = components?.[0]?.parameters?.map((p) => p?.text).filter(Boolean).join(' | ') || '';
-    const richTemplatePayload = encodeRichMessage({
+    const richTemplatePayload = buildTemplateRichMessageForDb({
       kind: 'template',
       template_name: approvedTemplate.template_name,
       language: String(language || approvedTemplate.language || config.default_template_language || 'es_LA'),
@@ -988,7 +1023,7 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
       sent_components: components || [],
       text: templatePreviewBody || savedText,
       ts: new Date().toISOString(),
-    });
+    }, savedText);
     const { data: saved, error: saveError } = await supabaseAdmin
       .from('whatsapp_messages')
       .insert({
@@ -1936,7 +1971,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
         if (!resolvedThreadId) throw new Error('Could not resolve whatsapp thread for recipient');
         const savedText = `[MASIVO] ${runtimeTemplateName}`;
         const templatePreviewBody = effectiveParams.join(' | ');
-        const richTemplatePayload = encodeRichMessage({
+        const richTemplatePayload = buildTemplateRichMessageForDb({
           kind: 'template',
           template_name: runtimeTemplateName,
           language: runtimeLanguage,
@@ -1944,7 +1979,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
           sent_components: components || [],
           text: templatePreviewBody || savedText,
           ts: new Date().toISOString(),
-        });
+        }, savedText);
 
         const { data: savedMessage, error: saveMessageError } = await supabaseAdmin
           .from('whatsapp_messages')
