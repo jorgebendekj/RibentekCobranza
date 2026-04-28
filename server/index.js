@@ -2539,6 +2539,49 @@ async function requireWorkspaceAdmin(req, res, next) {
   next();
 }
 
+/**
+ * Like requireWorkspaceAdmin, but global users.role === 'Superadmin' may target any tenant
+ * (superadmin console selects workspace via x-tenant-id without tenant_members in that tenant).
+ * Tenant-scoped Admins still require membership as before.
+ */
+async function requireWorkspaceAdminOrGlobalSuperadminForTenant(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const tenantId = req.headers['x-tenant-id'];
+  if (!authHeader?.startsWith('Bearer ')) return res.status(401).json({ error: 'No authorization header' });
+  if (!tenantId) return res.status(400).json({ error: 'Missing x-tenant-id header' });
+
+  const token = authHeader.split(' ')[1];
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !user) return res.status(401).json({ error: 'Invalid token' });
+
+  const { data: profile } = await supabaseAdmin
+    .from('users')
+    .select('role, enabled')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (!profile?.enabled) return res.status(403).json({ error: 'Forbidden: account disabled' });
+
+  if (profile.role === 'Superadmin') {
+    req.workspaceAdmin = { userId: user.id, tenantId };
+    return next();
+  }
+
+  const { data: membership } = await supabaseAdmin
+    .from('tenant_members')
+    .select('role, enabled')
+    .eq('tenant_id', tenantId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (!membership || !membership.enabled || !['Admin', 'Superadmin'].includes(membership.role)) {
+    return res.status(403).json({ error: 'Forbidden: Admin role required in selected workspace' });
+  }
+
+  req.workspaceAdmin = { userId: user.id, tenantId };
+  next();
+}
+
 // ════════════════════════════════════════════════════════════════
 // USERS — Admin operations
 // ════════════════════════════════════════════════════════════════
@@ -2883,7 +2926,7 @@ app.post('/setup/init', async (req, res) => {
  * Headers: Authorization Bearer <token>, x-tenant-id
  * Body: { email, role }
  */
-app.post('/admin/invites', requireWorkspaceAdmin, async (req, res) => {
+app.post('/admin/invites', requireWorkspaceAdminOrGlobalSuperadminForTenant, async (req, res) => {
   const { email, role } = req.body;
   if (!email || !role) return res.status(400).json({ error: 'Missing required fields: email, role' });
   if (!['Admin', 'Agente'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
@@ -2934,7 +2977,7 @@ app.post('/admin/invites', requireWorkspaceAdmin, async (req, res) => {
  * Headers: Authorization Bearer <token>, x-tenant-id
  * Query: status=all|pending|accepted|expired|revoked
  */
-app.get('/admin/invites', requireWorkspaceAdmin, async (req, res) => {
+app.get('/admin/invites', requireWorkspaceAdminOrGlobalSuperadminForTenant, async (req, res) => {
   const status = String(req.query.status || 'all');
   const allowed = ['all', 'pending', 'accepted', 'expired', 'revoked'];
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status filter' });
@@ -2956,7 +2999,7 @@ app.get('/admin/invites', requireWorkspaceAdmin, async (req, res) => {
  * POST /admin/invites/:id/resend
  * Headers: Authorization Bearer <token>, x-tenant-id
  */
-app.post('/admin/invites/:id/resend', requireWorkspaceAdmin, async (req, res) => {
+app.post('/admin/invites/:id/resend', requireWorkspaceAdminOrGlobalSuperadminForTenant, async (req, res) => {
   const inviteId = req.params.id;
   const actorKey = `${req.workspaceAdmin.tenantId}:${req.workspaceAdmin.userId}:${req.ip ?? 'na'}`;
   const retryAfter = enforceInviteRateLimit(actorKey);
@@ -2981,7 +3024,7 @@ app.post('/admin/invites/:id/resend', requireWorkspaceAdmin, async (req, res) =>
  * DELETE /admin/invites/:id
  * Headers: Authorization Bearer <token>, x-tenant-id
  */
-app.delete('/admin/invites/:id', requireWorkspaceAdmin, async (req, res) => {
+app.delete('/admin/invites/:id', requireWorkspaceAdminOrGlobalSuperadminForTenant, async (req, res) => {
   const inviteId = req.params.id;
   const { data: invite, error: readError } = await supabaseAdmin
     .from('tenant_invites')

@@ -101,25 +101,33 @@ export function useToggleSubscription() {
 
 const INVITES_KEY = 'tenant-invites';
 
-export function useInvites(status: 'all' | InviteStatus = 'all') {
-  const { tenantId } = useAuth();
+export function useInvites(
+  status: 'all' | InviteStatus = 'all',
+  opts?: { tenantId?: string | null },
+) {
+  const { tenantId: authTenantId } = useAuth();
+  const effectiveTenantId = opts?.tenantId ?? authTenantId;
   return useQuery({
-    queryKey: [INVITES_KEY, tenantId, status],
+    queryKey: [INVITES_KEY, effectiveTenantId, status],
     queryFn: async () => {
-      const data = await adminInvitesService.list(tenantId!, status);
+      const data = await adminInvitesService.list(effectiveTenantId!, status);
       return data.items ?? [];
     },
-    enabled: !!tenantId,
+    enabled: !!effectiveTenantId,
   });
 }
 
 export function useCreateInvite() {
-  const { tenantId } = useAuth();
+  const { tenantId: authTenantId } = useAuth();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { email: string; role: InviteRole }) => adminInvitesService.create(tenantId!, payload),
-    onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: [INVITES_KEY, tenantId] });
+    mutationFn: (payload: { email: string; role: InviteRole; tenantId?: string }) => {
+      const tid = payload.tenantId ?? authTenantId!;
+      return adminInvitesService.create(tid, { email: payload.email, role: payload.role });
+    },
+    onSuccess: (data, variables) => {
+      const tid = variables.tenantId ?? authTenantId!;
+      qc.invalidateQueries({ queryKey: [INVITES_KEY, tid] });
       if (data.email_sent === false) {
         toast.warning('Invitacion creada, pero el correo no pudo enviarse.');
       } else {
@@ -131,12 +139,16 @@ export function useCreateInvite() {
 }
 
 export function useResendInvite() {
-  const { tenantId } = useAuth();
+  const { tenantId: authTenantId } = useAuth();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (inviteId: string) => adminInvitesService.resend(tenantId!, inviteId),
-    onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: [INVITES_KEY, tenantId] });
+    mutationFn: (payload: { inviteId: string; tenantId?: string }) => {
+      const tid = payload.tenantId ?? authTenantId!;
+      return adminInvitesService.resend(tid, payload.inviteId);
+    },
+    onSuccess: (data, variables) => {
+      const tid = variables.tenantId ?? authTenantId!;
+      qc.invalidateQueries({ queryKey: [INVITES_KEY, tid] });
       if (data.email_sent === false) {
         toast.warning('Se reenvio la invitacion, pero el correo fallo.');
       } else {
@@ -148,12 +160,16 @@ export function useResendInvite() {
 }
 
 export function useRevokeInvite() {
-  const { tenantId } = useAuth();
+  const { tenantId: authTenantId } = useAuth();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (inviteId: string) => adminInvitesService.revoke(tenantId!, inviteId),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: [INVITES_KEY, tenantId] });
+    mutationFn: (payload: { inviteId: string; tenantId?: string }) => {
+      const tid = payload.tenantId ?? authTenantId!;
+      return adminInvitesService.revoke(tid, payload.inviteId);
+    },
+    onSuccess: (_data, variables) => {
+      const tid = variables.tenantId ?? authTenantId!;
+      qc.invalidateQueries({ queryKey: [INVITES_KEY, tid] });
       toast.success('Invitacion revocada.');
     },
     onError: (e: Error) => toast.error(e.message),

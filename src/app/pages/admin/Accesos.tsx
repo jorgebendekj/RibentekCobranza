@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { UserPlus, Search, Trash2, Shield, Building2, MoreVertical, AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
@@ -10,7 +10,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "../../components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
-import { useAllUsers, useCreateAdminUser, useCreateInvite, useDeleteAdminUser, useInvites, useResendInvite, useRevokeInvite, useTenants } from "../../hooks/useAdmin";
+import { useAllUsers, useCreateAdminUser, useDeleteAdminUser, useTenants } from "../../hooks/useAdmin";
+import { WorkspaceInvitesSection } from "../../components/admin/WorkspaceInvitesSection";
+import { useAuth } from "../../context/AuthContext";
 import type { UserRole } from "../../data/supabase.types";
 import { USER_ROLE_LABELS } from "../../data/supabase.types";
 
@@ -33,15 +35,21 @@ export default function AdminAccesos() {
   const [formRole, setFormRole] = useState<UserRole>("Agente");
   const [formTenant, setFormTenant] = useState("");
   const [showPwd, setShowPwd] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"Admin" | "Agente">("Agente");
+  const { activeWorkspaceId } = useAuth();
+  const [inviteTenantId, setInviteTenantId] = useState("");
 
   const { data: users = [], isLoading } = useAllUsers();
   const { data: tenants = [] } = useTenants();
-  const { data: invites = [], isLoading: invitesLoading } = useInvites("all");
-  const createInvite = useCreateInvite();
-  const resendInvite = useResendInvite();
-  const revokeInvite = useRevokeInvite();
+
+  useEffect(() => {
+    if (inviteTenantId || !(tenants as { id: string }[])?.length) return;
+    const list = tenants as { id: string }[];
+    const preferred =
+      activeWorkspaceId && list.some((t) => t.id === activeWorkspaceId)
+        ? activeWorkspaceId
+        : list[0].id;
+    setInviteTenantId(preferred);
+  }, [tenants, activeWorkspaceId, inviteTenantId]);
   const createUser = useCreateAdminUser();
   const deleteUser = useDeleteAdminUser();
 
@@ -63,17 +71,6 @@ export default function AdminAccesos() {
 
   const formatDate = (iso: string | null) => iso ? new Date(iso).toLocaleDateString("es-BO") : "—";
   const getTenantName = (id: string | null) => (tenants as any[]).find(t => t.id === id)?.name ?? "—";
-  const pendingInvites = invites.filter((i) => i.status === "pending").length;
-  const activeInvites = invites.filter((i) => i.status !== "revoked" && i.status !== "accepted").length;
-
-  const handleCreateInvite = () => {
-    if (!inviteEmail.trim()) return;
-    createInvite.mutate(
-      { email: inviteEmail.trim(), role: inviteRole },
-      { onSuccess: () => setInviteEmail("") }
-    );
-  };
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -103,89 +100,15 @@ export default function AdminAccesos() {
         ))}
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Invitaciones por Email</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_180px_auto] gap-3">
-            <Input
-              type="email"
-              placeholder="usuario@empresa.com"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-            />
-            <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as "Admin" | "Agente")}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Admin">Admin</SelectItem>
-                <SelectItem value="Agente">Agente</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button onClick={handleCreateInvite} disabled={createInvite.isPending || !inviteEmail.trim()}>
-              {createInvite.isPending ? "Enviando..." : "Enviar invitación"}
-            </Button>
-          </div>
-
-          <div className="flex items-center gap-2 text-xs text-slate-600">
-            <Badge className="bg-blue-100 text-blue-700 border-0">Pendientes: {pendingInvites}</Badge>
-            <Badge className="bg-slate-100 text-slate-700 border-0">Activas: {activeInvites}</Badge>
-            <span>La invitación puede aceptarse con email o Google (mismo correo).</span>
-          </div>
-
-          <div className="border rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b bg-slate-50">
-                  <th className="text-left py-2 px-3 font-medium text-slate-600">Email</th>
-                  <th className="text-left py-2 px-3 font-medium text-slate-600">Rol</th>
-                  <th className="text-left py-2 px-3 font-medium text-slate-600">Estado</th>
-                  <th className="text-left py-2 px-3 font-medium text-slate-600">Expira</th>
-                  <th className="text-right py-2 px-3 font-medium text-slate-600">Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(invitesLoading ? [] : invites).slice(0, 8).map((inv) => (
-                  <tr key={inv.id} className="border-b last:border-b-0">
-                    <td className="py-2 px-3">{inv.email}</td>
-                    <td className="py-2 px-3">{inv.role}</td>
-                    <td className="py-2 px-3">
-                      <Badge className="bg-slate-100 text-slate-700 border-0">{inv.status}</Badge>
-                    </td>
-                    <td className="py-2 px-3">{formatDate(inv.expires_at)}</td>
-                    <td className="py-2 px-3">
-                      <div className="flex items-center justify-end gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={inv.status !== "pending" || resendInvite.isPending}
-                          onClick={() => resendInvite.mutate(inv.id)}
-                        >
-                          Reenviar
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-red-600 hover:text-red-700"
-                          disabled={inv.status !== "pending" || revokeInvite.isPending}
-                          onClick={() => revokeInvite.mutate(inv.id)}
-                        >
-                          Revocar
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!invitesLoading && invites.length === 0 ? (
-              <div className="py-5 text-center text-sm text-slate-500">Aún no hay invitaciones creadas.</div>
-            ) : null}
-          </div>
-        </CardContent>
-      </Card>
+      <WorkspaceInvitesSection
+        variant="superadmin"
+        tenants={(tenants as { id: string; name: string }[]).map((t) => ({
+          id: t.id,
+          name: t.name,
+        }))}
+        selectedTenantId={inviteTenantId}
+        onTenantChange={setInviteTenantId}
+      />
 
       {/* Filters */}
       <Card>

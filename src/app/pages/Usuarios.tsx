@@ -16,6 +16,8 @@ import {
 } from "../components/ui/select";
 import { Skeleton } from "../components/ui/skeleton";
 import { toast } from "sonner";
+import { WorkspaceInvitesSection } from "../components/admin/WorkspaceInvitesSection";
+import { useAuth } from "../context/AuthContext";
 import { useUsers, useToggleUser, useUpdateUser } from "../hooks/useUsers";
 import type { DbUser, UserRole } from "../data/supabase.types";
 import { USER_ROLE_LABELS } from "../data/supabase.types";
@@ -30,6 +32,10 @@ export default function Usuarios() {
   const [formNombre, setFormNombre] = useState("");
   const [formEmail, setFormEmail] = useState("");
   const [formRol, setFormRol] = useState<UserRole>("Agente");
+
+  const { activeRole, tenantId } = useAuth();
+  const canIssueInvites =
+    !!tenantId && (activeRole === "Admin" || activeRole === "Superadmin");
 
   const { data: users = [], isLoading } = useUsers();
   const toggleUser = useToggleUser();
@@ -161,6 +167,8 @@ export default function Usuarios() {
           </Card>
         ))}
       </div>
+
+      {canIssueInvites ? <WorkspaceInvitesSection variant="tenant" /> : null}
 
       {/* Search */}
       <Card>

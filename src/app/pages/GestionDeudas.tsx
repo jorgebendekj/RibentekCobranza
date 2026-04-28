@@ -32,6 +32,10 @@ import { adminDebtsService } from "../services/admin.service";
 type VistaMode = "individual" | "agrupada";
 type MassStep = 1 | 2 | 3 | 4 | 5;
 
+/** Tipografía cercana a WhatsApp Web (Segoe UI / Helvetica / Arial). */
+const WHATSAPP_PREVIEW_FONT_FAMILY =
+  '"Segoe UI","Helvetica Neue",Helvetica,Arial,sans-serif';
+
 function interpolateTemplateText(text: string, params: string[]): string {
   if (!text) return "";
   if (!params.length) return text;
@@ -888,12 +892,15 @@ export function GestionDeudas() {
                       <Badge variant="outline" className="text-[10px]">Plantilla</Badge>
                     </div>
                     <div
-                      className="p-4"
+                      className="p-4 antialiased"
                       style={{
                         background: "#efe7dd url('https://cloud.githubusercontent.com/assets/398893/15136779/4e765036-1639-11e6-9201-67e728e86f39.jpg') repeat",
+                        fontFamily: WHATSAPP_PREVIEW_FONT_FAMILY,
+                        WebkitFontSmoothing: "antialiased",
+                        MozOsxFontSmoothing: "grayscale",
                       }}
                     >
-                      <div className="mx-auto max-w-[760px] font-sans">
+                      <div className="mx-auto max-w-[760px]">
                         <div className="max-w-[680px] rounded-[0_6px_6px_6px] border border-[#d8d8d8] bg-[#ffffff] px-3 py-2 shadow-[0_1px_0_rgba(0,0,0,0.08)]">
                           {header ? (
                             <p className="text-[28px] leading-[1.18] font-semibold text-[#111b21] whitespace-pre-wrap">
