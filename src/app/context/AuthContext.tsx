@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Session, User, AuthError } from '@supabase/supabase-js';
 import { supabase } from '../../lib/supabase';
 import type { DbUser, UserRole } from '../data/supabase.types';
@@ -37,6 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const hasLoadedAuthStateRef = useRef(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -65,7 +66,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   async function loadAuthState(authUserId: string) {
-    setIsLoading(true);
+    const shouldShowGlobalLoader = !hasLoadedAuthStateRef.current;
+    if (shouldShowGlobalLoader) setIsLoading(true);
     setBootstrapError(null);
     let bootstrapFailed = false;
     try {
@@ -133,7 +135,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setWorkspaces([]);
       setActiveWorkspaceId(null);
     } finally {
-      setIsLoading(false);
+      hasLoadedAuthStateRef.current = true;
+      if (shouldShowGlobalLoader) setIsLoading(false);
     }
   }
 
