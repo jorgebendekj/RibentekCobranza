@@ -833,7 +833,7 @@ app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
 
     // 4. Store outbound message
     if (resolvedThreadId) {
-      const { data: saved } = await supabaseAdmin
+      const { data: saved, error: saveError } = await supabaseAdmin
         .from('whatsapp_messages')
         .insert({
           whatsapp_thread_id: resolvedThreadId,
@@ -846,6 +846,9 @@ app.post('/api/meta/messages/send', requireWorkspaceAdmin, async (req, res) => {
         })
         .select()
         .single();
+      if (saveError || !saved?.id) {
+        return res.status(500).json({ error: saveError?.message || 'Could not persist outbound message in whatsapp_messages' });
+      }
 
       // Update thread snapshot
       await supabaseAdmin
@@ -986,7 +989,7 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
       text: templatePreviewBody || savedText,
       ts: new Date().toISOString(),
     });
-    const { data: saved } = await supabaseAdmin
+    const { data: saved, error: saveError } = await supabaseAdmin
       .from('whatsapp_messages')
       .insert({
         whatsapp_thread_id: resolvedThreadId,
@@ -999,6 +1002,9 @@ app.post('/api/meta/messages/send-template', requireWorkspaceAdmin, async (req, 
       })
       .select()
       .single();
+    if (saveError || !saved?.id) {
+      return res.status(500).json({ error: saveError?.message || 'Could not persist template message in whatsapp_messages' });
+    }
 
     const windowState = await getConversationWindowState({
       tenantId,
@@ -1927,6 +1933,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
           seedLastMessage: `[MASIVO] ${runtimeTemplateName}`,
         });
         const resolvedThreadId = resolved.threadId;
+        if (!resolvedThreadId) throw new Error('Could not resolve whatsapp thread for recipient');
         const savedText = `[MASIVO] ${runtimeTemplateName}`;
         const templatePreviewBody = effectiveParams.join(' | ');
         const richTemplatePayload = encodeRichMessage({
@@ -1939,7 +1946,7 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
           ts: new Date().toISOString(),
         });
 
-        const { data: savedMessage } = await supabaseAdmin
+        const { data: savedMessage, error: saveMessageError } = await supabaseAdmin
           .from('whatsapp_messages')
           .insert({
             whatsapp_thread_id: resolvedThreadId,
@@ -1954,6 +1961,9 @@ app.post('/api/meta/mass-sends/:id/run', requireWorkspaceAdmin, async (req, res)
           })
           .select()
           .single();
+        if (saveMessageError || !savedMessage?.id) {
+          throw new Error(saveMessageError?.message || 'Could not persist mass-send message in whatsapp_messages');
+        }
 
         const windowState = await getConversationWindowState({
           tenantId,
