@@ -129,9 +129,22 @@ export function useCreateInvite() {
       const tid = variables.tenantId ?? authTenantId!;
       qc.invalidateQueries({ queryKey: [INVITES_KEY, tid] });
       if (data.email_sent === false) {
-        toast.warning('Invitacion creada, pero el correo no pudo enviarse.');
+        const inviteUrl = data.invite_url;
+        if (inviteUrl) {
+          navigator.clipboard?.writeText(inviteUrl).catch(() => {});
+          toast.warning(
+            `Invitación creada. El correo no pudo enviarse — el enlace fue copiado al portapapeles.`,
+            {
+              description: inviteUrl,
+              duration: 12000,
+              action: { label: 'Copiar', onClick: () => navigator.clipboard?.writeText(inviteUrl) },
+            }
+          );
+        } else {
+          toast.warning('Invitación creada, pero el correo no pudo enviarse.');
+        }
       } else {
-        toast.success('Invitacion enviada correctamente.');
+        toast.success('Invitación enviada correctamente.');
       }
     },
     onError: (e: Error) => toast.error(e.message),
@@ -150,9 +163,22 @@ export function useResendInvite() {
       const tid = variables.tenantId ?? authTenantId!;
       qc.invalidateQueries({ queryKey: [INVITES_KEY, tid] });
       if (data.email_sent === false) {
-        toast.warning('Se reenvio la invitacion, pero el correo fallo.');
+        const inviteUrl = data.invite_url;
+        if (inviteUrl) {
+          navigator.clipboard?.writeText(inviteUrl).catch(() => {});
+          toast.warning(
+            `El correo no pudo enviarse — el enlace fue copiado al portapapeles.`,
+            {
+              description: inviteUrl,
+              duration: 12000,
+              action: { label: 'Copiar', onClick: () => navigator.clipboard?.writeText(inviteUrl) },
+            }
+          );
+        } else {
+          toast.warning('Se reenvió la invitación, pero el correo falló.');
+        }
       } else {
-        toast.success('Invitacion reenviada.');
+        toast.success('Invitación reenviada.');
       }
     },
     onError: (e: Error) => toast.error(e.message),
