@@ -274,8 +274,33 @@ function buildInviteEmailHtml(inviteUrl) {
 </body></html>`;
 }
 
-async function sendInviteEmail(email, inviteUrl) {
-  // ── Try direct SMTP first (bypasses Supabase GoTrue rate limits) ──
+async function sendInviteEmail(email, rawInviteUrl) {
+  // Try to generate a Supabase magic link that redirects to our rawInviteUrl
+  // This gives the user a session automatically when they click the link in the email
+  let finalInviteUrl = rawInviteUrl;
+  try {
+    let linkRes = await supabaseAdmin.auth.admin.generateLink({
+      type: 'magiclink',
+      email: email,
+      options: { redirectTo: rawInviteUrl }
+    });
+    // If magiclink fails (e.g. user doesn't exist), try signup
+    if (linkRes.error && linkRes.error.message.includes('not found')) {
+      linkRes = await supabaseAdmin.auth.admin.generateLink({
+        type: 'signup',
+        email: email,
+        password: Math.random().toString(36).slice(-10) + 'A1!', // Dummy password for signup link
+        options: { redirectTo: rawInviteUrl }
+      });
+    }
+    if (!linkRes.error && linkRes.data?.properties?.action_link) {
+      finalInviteUrl = linkRes.data.properties.action_link;
+    }
+  } catch (err) {
+    console.warn('[invite] Failed to generate magic link, falling back to raw url', err);
+  }
+
+  // ── Try direct SMTP first (bypasses Supabase GoTrue rate limits on email sending) ──
   const transporter = buildSmtpTransporter();
   if (transporter) {
     try {
@@ -285,8 +310,8 @@ async function sendInviteEmail(email, inviteUrl) {
         from: `"${fromName}" <${fromAddr}>`,
         to: email,
         subject: 'Tu acceso a AiCobranzas',
-        html: buildInviteEmailHtml(inviteUrl),
-        text: `Accede a AiCobranzas usando este enlace (válido 72h):\n\n${inviteUrl}`,
+        html: buildInviteEmailHtml(finalInviteUrl),
+        text: `Accede a AiCobranzas usando este enlace (válido 72h):\n\n${finalInviteUrl}`,
       });
       return { email_sent: true, email_error: null };
     } catch (smtpErr) {
@@ -298,7 +323,7 @@ async function sendInviteEmail(email, inviteUrl) {
   // ── Fallback: Supabase inviteUserByEmail (has GoTrue rate limits) ──
   const { error: authEmailError } = await supabaseAdmin.auth.admin.inviteUserByEmail(
     email,
-    { redirectTo: inviteUrl }
+    { redirectTo: rawInviteUrl }
   );
   if (authEmailError) {
     const alreadyRegistered =
