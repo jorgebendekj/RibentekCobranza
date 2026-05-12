@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
+import nodemailer from 'nodemailer';
 import { createClient } from '@supabase/supabase-js';
 
 const app = express();
@@ -191,32 +192,122 @@ async function buildInboundRichMessage({ msg, token }) {
   };
 }
 
+// ── Nodemailer transporter (lazy-built from env) ─────────────
+function buildSmtpTransporter() {
+  const host = process.env.SMTP_HOST;
+  const port = parseInt(process.env.SMTP_PORT || '587', 10);
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
+  const secure = process.env.SMTP_SECURE === 'true' || port === 465;
+  if (!host || !user || !pass) return null;
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+  });
+}
+
+function buildInviteEmailHtml(inviteUrl) {
+  return `<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>Acceso a AiCobranzas</title></head>
+<body style="margin:0;padding:0;background:#f0f4ff;font-family:'Segoe UI',Arial,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f0f4ff;padding:40px 0;">
+  <tr><td align="center">
+    <table width="560" cellpadding="0" cellspacing="0" border="0"
+      style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(79,70,229,.10);max-width:560px;width:100%;">
+      <tr>
+        <td align="center" style="background:linear-gradient(135deg,#4f46e5 0%,#7c3aed 100%);padding:40px 40px 32px;">
+          <table cellpadding="0" cellspacing="0" border="0"><tr>
+            <td align="center" style="background:rgba(255,255,255,.15);border-radius:16px;width:64px;height:64px;text-align:center;vertical-align:middle;">
+              <span style="font-size:32px;line-height:64px;">&#9889;</span>
+            </td></tr></table>
+          <p style="margin:20px 0 0;font-size:22px;font-weight:700;color:#fff;letter-spacing:-.3px;">AiCobranzas</p>
+          <p style="margin:6px 0 0;font-size:13px;color:rgba(255,255,255,.75);letter-spacing:.5px;text-transform:uppercase;">Plataforma de Cobranza Inteligente</p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:40px 48px 32px;">
+          <p style="margin:0 0 8px;font-size:24px;font-weight:700;color:#1e1b4b;letter-spacing:-.5px;">Tu enlace de acceso</p>
+          <p style="margin:0 0 28px;font-size:15px;color:#6b7280;line-height:1.6;">
+            Haz clic en el bot&oacute;n para acceder a tu cuenta de forma segura.<br/>
+            Este enlace es v&aacute;lido por <strong style="color:#4f46e5;">72 horas</strong> y solo puede usarse una vez.
+          </p>
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td align="center" style="padding:8px 0 32px;">
+              <a href="${inviteUrl}" style="display:inline-block;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;text-decoration:none;font-size:16px;font-weight:700;padding:16px 48px;border-radius:12px;letter-spacing:.2px;box-shadow:0 4px 14px rgba(79,70,229,.4);">
+                Acceder a AiCobranzas &rarr;
+              </a>
+            </td></tr>
+          </table>
+          <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr><td style="border-top:1px solid #e5e7eb;padding-top:28px;">
+              <p style="margin:0 0 8px;font-size:13px;color:#9ca3af;">&#x00BF;El bot&oacute;n no funciona? Copia y pega este enlace:</p>
+              <p style="margin:0;font-size:12px;color:#4f46e5;word-break:break-all;background:#f5f3ff;border-radius:8px;padding:10px 14px;border-left:3px solid #7c3aed;">${inviteUrl}</p>
+            </td></tr>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:0 48px 32px;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+            <td style="background:#fefce8;border:1px solid #fde68a;border-radius:10px;padding:14px 18px;">
+              <p style="margin:0;font-size:12px;color:#92400e;line-height:1.6;">
+                &#128274; <strong>Seguridad:</strong> Si no solicitaste este acceso, ignora este correo. Nadie de AiCobranzas te pedir&aacute; tu contrase&ntilde;a.
+              </p>
+            </td></tr>
+          </table>
+        </td>
+      </tr>
+      <tr>
+        <td align="center" style="background:#f9fafb;border-top:1px solid #f3f4f6;padding:24px 48px;border-radius:0 0 16px 16px;">
+          <p style="margin:0 0 4px;font-size:12px;color:#9ca3af;">&copy; 2025 AiCobranzas &middot; Todos los derechos reservados</p>
+          <p style="margin:0;font-size:12px;color:#d1d5db;">Este es un mensaje autom&aacute;tico, no respondas a este correo.</p>
+        </td>
+      </tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>`;
+}
+
 async function sendInviteEmail(email, inviteUrl) {
-  // Use the Admin API to invite users — avoids OTP rate limits and is
-  // the correct approach for workspace invitations.
-  // If the user already exists in auth.users, inviteUserByEmail will still
-  // send the invite email without creating a duplicate.
+  // ── Try direct SMTP first (bypasses Supabase GoTrue rate limits) ──
+  const transporter = buildSmtpTransporter();
+  if (transporter) {
+    try {
+      const fromName = process.env.SMTP_FROM_NAME || 'AiCobranzas';
+      const fromAddr = process.env.SMTP_FROM || process.env.SMTP_USER;
+      await transporter.sendMail({
+        from: `"${fromName}" <${fromAddr}>`,
+        to: email,
+        subject: 'Tu acceso a AiCobranzas',
+        html: buildInviteEmailHtml(inviteUrl),
+        text: `Accede a AiCobranzas usando este enlace (válido 72h):\n\n${inviteUrl}`,
+      });
+      return { email_sent: true, email_error: null };
+    } catch (smtpErr) {
+      console.error('[invite] SMTP send failed:', smtpErr.message);
+      return { email_sent: false, email_error: smtpErr.message };
+    }
+  }
+
+  // ── Fallback: Supabase inviteUserByEmail (has GoTrue rate limits) ──
   const { error: authEmailError } = await supabaseAdmin.auth.admin.inviteUserByEmail(
     email,
     { redirectTo: inviteUrl }
   );
-
   if (authEmailError) {
-    // Supabase returns "User already registered" when the email exists.
-    // That's fine — the invite record is still valid and the user can use it.
     const alreadyRegistered =
       authEmailError.message?.toLowerCase().includes('already registered') ||
       authEmailError.message?.toLowerCase().includes('already been registered') ||
       authEmailError.status === 422;
-
     if (alreadyRegistered) {
-      // User exists — no email sent, but invite URL is still valid.
       return { email_sent: false, email_error: 'El usuario ya tiene una cuenta. Comparte el enlace de invitación directamente.' };
     }
-
     return { email_sent: false, email_error: authEmailError.message };
   }
-
   return { email_sent: true, email_error: null };
 }
 
