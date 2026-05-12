@@ -87,6 +87,12 @@ export default function InvitePage() {
     });
     const payload = await res.json();
     if (!res.ok) {
+      if (res.status === 403 && payload.error?.includes('otro email')) {
+        await supabase.auth.signOut();
+        setState("auth");
+        setAuthError("Tu sesión actual no coincide con el email de la invitación. Hemos cerrado tu sesión anterior. Por favor, inicia sesión con la cuenta correcta.");
+        return;
+      }
       setState("invalid");
       setMessage(payload.error ?? "No se pudo aceptar la invitación");
       return;
