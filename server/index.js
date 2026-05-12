@@ -549,8 +549,40 @@ app.get('/health', (req, res) => {
       hasServiceRoleKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
       hasFrontendUrl: Boolean(process.env.FRONTEND_URL),
       nodeEnv: process.env.NODE_ENV ?? null,
+      smtp: {
+        hasHost: Boolean(process.env.SMTP_HOST),
+        host: process.env.SMTP_HOST || null,
+        port: process.env.SMTP_PORT || null,
+        secure: process.env.SMTP_SECURE || null,
+        hasUser: Boolean(process.env.SMTP_USER),
+        hasPass: Boolean(process.env.SMTP_PASS),
+        from: process.env.SMTP_FROM || null,
+      },
     },
   });
+});
+
+// ── SMTP connection test ───────────────────────────────────────
+app.get('/health/smtp', async (req, res) => {
+  const transporter = buildSmtpTransporter();
+  if (!transporter) {
+    return res.status(503).json({
+      ok: false,
+      error: 'SMTP not configured — missing SMTP_HOST, SMTP_USER or SMTP_PASS env vars',
+      vars: {
+        SMTP_HOST: process.env.SMTP_HOST || null,
+        SMTP_PORT: process.env.SMTP_PORT || null,
+        SMTP_USER: process.env.SMTP_USER || null,
+        SMTP_PASS: process.env.SMTP_PASS ? '***set***' : null,
+      },
+    });
+  }
+  try {
+    await transporter.verify();
+    return res.json({ ok: true, message: 'SMTP connection verified OK' });
+  } catch (err) {
+    return res.status(503).json({ ok: false, error: err.message });
+  }
 });
 
 const AUTH_BOOTSTRAP_WINDOW_MS = 60 * 1000;
