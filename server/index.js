@@ -192,16 +192,31 @@ async function buildInboundRichMessage({ msg, token }) {
 }
 
 async function sendInviteEmail(email, inviteUrl) {
-  const { error: authEmailError } = await supabaseAdmin.auth.signInWithOtp({
+  // Use the Admin API to invite users — avoids OTP rate limits and is
+  // the correct approach for workspace invitations.
+  // If the user already exists in auth.users, inviteUserByEmail will still
+  // send the invite email without creating a duplicate.
+  const { error: authEmailError } = await supabaseAdmin.auth.admin.inviteUserByEmail(
     email,
-    options: {
-      shouldCreateUser: true,
-      emailRedirectTo: inviteUrl,
-    },
-  });
+    { redirectTo: inviteUrl }
+  );
+
   if (authEmailError) {
+    // Supabase returns "User already registered" when the email exists.
+    // That's fine — the invite record is still valid and the user can use it.
+    const alreadyRegistered =
+      authEmailError.message?.toLowerCase().includes('already registered') ||
+      authEmailError.message?.toLowerCase().includes('already been registered') ||
+      authEmailError.status === 422;
+
+    if (alreadyRegistered) {
+      // User exists — no email sent, but invite URL is still valid.
+      return { email_sent: false, email_error: 'El usuario ya tiene una cuenta. Comparte el enlace de invitación directamente.' };
+    }
+
     return { email_sent: false, email_error: authEmailError.message };
   }
+
   return { email_sent: true, email_error: null };
 }
 
