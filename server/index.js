@@ -3276,15 +3276,8 @@ app.get('/invites/:token', async (req, res) => {
   }
 
   const tenant = Array.isArray(invite.tenants) ? invite.tenants[0] : invite.tenants;
-  const [localPart, domainPart] = String(invite.email).split('@');
-  const safeLocal = localPart && localPart.length > 2
-    ? `${localPart[0]}***${localPart[localPart.length - 1]}`
-    : '***';
-  const maskedEmail = domainPart ? `${safeLocal}@${domainPart}` : invite.email;
 
   // Check if user already has an account in Supabase Auth
-  const { data: authList } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1 });
-  // listUsers can't filter by email directly, use getUserByEmail workaround
   let userAlreadyExists = false;
   try {
     const { data: existingUsers } = await supabaseAdmin
@@ -3300,7 +3293,7 @@ app.get('/invites/:token', async (req, res) => {
     token: invite.id,
     tenantId: invite.tenant_id,
     tenantName: tenant?.name ?? 'Workspace',
-    email: maskedEmail,
+    email: invite.email, // Returning real email so frontend can login/signup
     role: invite.role,
     userAlreadyExists,
   });
