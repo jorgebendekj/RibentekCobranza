@@ -3256,12 +3256,28 @@ app.get('/invites/:token', async (req, res) => {
     ? `${localPart[0]}***${localPart[localPart.length - 1]}`
     : '***';
   const maskedEmail = domainPart ? `${safeLocal}@${domainPart}` : invite.email;
+
+  // Check if user already has an account in Supabase Auth
+  const { data: authList } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1 });
+  // listUsers can't filter by email directly, use getUserByEmail workaround
+  let userAlreadyExists = false;
+  try {
+    const { data: existingUsers } = await supabaseAdmin
+      .from('users')
+      .select('id')
+      .eq('email', invite.email)
+      .is('deleted_at', null)
+      .limit(1);
+    userAlreadyExists = !!(existingUsers && existingUsers.length > 0);
+  } catch (_) { /* ignore */ }
+
   return res.json({
     token: invite.id,
     tenantId: invite.tenant_id,
     tenantName: tenant?.name ?? 'Workspace',
     email: maskedEmail,
     role: invite.role,
+    userAlreadyExists,
   });
 });
 
@@ -3297,12 +3313,13 @@ app.post('/invites/:token/accept', async (req, res) => {
   const profileName = user.user_metadata?.full_name || user.user_metadata?.name || user.email?.split('@')[0] || 'Usuario';
   const { data: existingProfile } = await supabaseAdmin
     .from('users')
-    .select('id')
+    .select('id, tenant_id')
     .eq('id', user.id)
     .is('deleted_at', null)
     .maybeSingle();
 
   if (!existingProfile) {
+    // New user — create profile with tenant assigned
     const { error: createProfileError } = await supabaseAdmin
       .from('users')
       .insert({
@@ -3310,11 +3327,19 @@ app.post('/invites/:token/accept', async (req, res) => {
         name: profileName,
         email: user.email,
         role: defaultRole,
-        tenant_id: null,
+        tenant_id: invite.tenant_id,
         enabled: true,
       });
     if (createProfileError) return res.status(500).json({ error: createProfileError.message });
+  } else if (!existingProfile.tenant_id) {
+    // Existing user but no tenant set yet — assign this tenant
+    const { error: updateTenantErr } = await supabaseAdmin
+      .from('users')
+      .update({ tenant_id: invite.tenant_id, role: defaultRole })
+      .eq('id', user.id);
+    if (updateTenantErr) return res.status(500).json({ error: updateTenantErr.message });
   }
+  // (If user already has a tenant_id, we keep theirs — the tenant_members table handles multi-workspace)
 
   const { error: memberError } = await supabaseAdmin
     .from('tenant_members')

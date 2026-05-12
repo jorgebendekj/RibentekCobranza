@@ -17,7 +17,7 @@ export default function InvitePage() {
 
   const [state, setState] = useState<InviteState>("checking");
   const [message, setMessage] = useState("");
-  const [inviteInfo, setInviteInfo] = useState<{ tenantName: string; email: string; role: string } | null>(null);
+  const [inviteInfo, setInviteInfo] = useState<{ tenantName: string; email: string; role: string; userAlreadyExists?: boolean } | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>("signup");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -39,6 +39,11 @@ export default function InvitePage() {
         const payload = await res.json();
         if (!res.ok) throw new Error(payload.error ?? "Invitación inválida");
         setInviteInfo(payload);
+
+        // Auto-select auth mode based on whether user already has an account
+        if (payload.userAlreadyExists) {
+          setAuthMode("login");
+        }
 
         // Check if user already has a valid session
         const { data } = await supabase.auth.getSession();
