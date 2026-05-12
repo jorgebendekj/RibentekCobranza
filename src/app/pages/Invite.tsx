@@ -26,7 +26,7 @@ export default function InvitePage() {
   const [authLoading, setAuthLoading] = useState(false);
   const [startingGoogle, setStartingGoogle] = useState(false);
 
-  // 1. Validate invite token
+  // 1. Validate invite token on load
   useEffect(() => {
     if (!token) {
       setState("invalid");
@@ -45,10 +45,10 @@ export default function InvitePage() {
           setAuthMode("login");
         }
 
-        // Check if user already has a valid session
+        // Check if there's already an active session (e.g. returning from Google OAuth)
         const { data } = await supabase.auth.getSession();
-        if (data.session?.user?.email?.toLowerCase() === payload.email.toLowerCase()) {
-          // Already logged in with the right email → go straight to accept
+        if (data.session?.access_token) {
+          // Has a session → let the server validate email ownership
           await doAcceptInvite(data.session.access_token, token);
         } else {
           setState("auth");
@@ -58,6 +58,24 @@ export default function InvitePage() {
         setState("invalid");
         setMessage(err.message);
       });
+  }, [token]);
+
+  // 1b. Listen for OAuth redirects (Google sign-in completes async)
+  useEffect(() => {
+    if (!token) return;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if ((event === "SIGNED_IN" || event === "TOKEN_REFRESHED") && session?.access_token) {
+        // Only auto-accept if we're still in the auth/checking state
+        setState(prev => {
+          if (prev === "auth" || prev === "checking") {
+            // trigger accept asynchronously
+            doAcceptInvite(session.access_token, token);
+          }
+          return prev;
+        });
+      }
+    });
+    return () => subscription.unsubscribe();
   }, [token]);
 
   // 2. Accept invite (after auth)
