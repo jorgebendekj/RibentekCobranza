@@ -57,11 +57,10 @@ function createMcpServer() {
         }
 
         const { data: debts, error: debtsErr } = await supabase
-          .from('debts')
-          .select('id, concept, total_amount, balance_due, due_date')
-          .eq('tenant_id', tenant_id)
+          .from('debt_details')
+          .select('id, debt_description, total, expiration_date')
           .eq('contact_id', contacts[0].id)
-          .eq('status', 'pending')
+          .eq('debt_status', 'Pending')
           .is('deleted_at', null);
 
         if (debtsErr) throw new Error(debtsErr.message);
@@ -70,15 +69,15 @@ function createMcpServer() {
           return { content: [{ type: 'text', text: `El cliente ${contacts[0].name} no tiene deudas pendientes.` }] };
         }
 
-        const totalDeuda = debts.reduce((sum, d) => sum + Number(d.balance_due), 0);
+        const totalDeuda = debts.reduce((sum, d) => sum + Number(d.total), 0);
         const resultado = {
           cliente: contacts[0].name,
           resumen: `Tiene ${debts.length} factura(s) pendiente(s). Deuda total: $${totalDeuda.toFixed(2)}`,
           facturas: debts.map(d => ({
-            concepto: d.concept,
-            total: Number(d.total_amount),
-            saldo_pendiente: Number(d.balance_due),
-            fecha_vencimiento: d.due_date,
+            concepto: d.debt_description,
+            total: Number(d.total),
+            saldo_pendiente: Number(d.total),
+            fecha_vencimiento: d.expiration_date,
           }))
         };
 
