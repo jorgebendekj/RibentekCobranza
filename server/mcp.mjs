@@ -1,7 +1,5 @@
-import express from 'express';
-import cors from 'cors';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createClient } from '@supabase/supabase-js';
 
@@ -10,17 +8,11 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'placeholder-key';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const mcpApp = express();
-mcpApp.use(cors());
-mcpApp.use(express.json());
-
-// 1. Instanciar el Servidor MCP Globalmente
 const mcpServer = new Server(
   { name: 'AiCobranzas-MCP', version: '1.0.0' },
   { capabilities: { tools: {} } }
 );
 
-// 2. Registrar Herramientas
 mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
@@ -40,7 +32,6 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
-// 3. Lógica
 mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name === 'consultar_facturas_pendientes') {
     const { tenant_id, phone_number } = request.params.arguments;
@@ -91,34 +82,30 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   throw new Error('Herramienta no encontrada');
 });
 
-// Endpoint de validación
-mcpApp.get('/mcp/status', (req, res) => {
-  res.json({
-    status: 'online',
-    protocol: 'mcp',
-    transport: 'streamable_http',
-    version: '1.0.0',
-    tools: ['consultar_facturas_pendientes']
-  });
-});
-
-// ==========================================
-// Transporte ÚNICO: Streamable HTTP (Stateless)
-// ==========================================
-const transport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: undefined, // Stateless
+const transport = new WebStandardStreamableHTTPServerTransport({
+  sessionIdGenerator: undefined,
 });
 mcpServer.connect(transport).catch(console.error);
 
-mcpApp.use('/mcp', async (req, res) => {
+// Esta función recibe un objeto Request nativo y retorna un objeto Response nativo
+export async function handleMcpRequest(request) {
+  if (request.method === 'GET' && request.url.endsWith('/status')) {
+    return new Response(JSON.stringify({
+      status: 'online',
+      protocol: 'mcp',
+      transport: 'web_standard_streamable_http',
+      version: '1.0.0',
+      tools: ['consultar_facturas_pendientes']
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
   try {
-    await transport.handleRequest(req, res, req.body);
+    return await transport.handleRequest(request);
   } catch (error) {
     console.error('[MCP Transport Error]:', error);
-    if (!res.headersSent) {
-      res.status(500).send('Transport error');
-    }
+    return new Response('Transport error', { status: 500 });
   }
-});
-
-export default mcpApp;
+}

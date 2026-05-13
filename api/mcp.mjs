@@ -1,3 +1,9 @@
-import mcpApp from '../server/mcp.mjs';
+import { handleMcpRequest } from '../server/mcp.mjs';
 
-export default mcpApp;
+export const config = {
+  runtime: 'edge',
+};
+
+export default async function handler(request) {
+  return await handleMcpRequest(request);
+}
