@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createClient } from '@supabase/supabase-js';
 
@@ -109,21 +109,25 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   throw new Error('Herramienta no encontrada');
 });
 
-// 4. Transporte SSE
-let activeTransport = null;
-
-mcpApp.get('/mcp/sse', async (req, res) => {
-  console.log('[MCP] SSE connection requested');
-  const transport = new SSEServerTransport('/mcp/messages', res);
-  activeTransport = transport;
-  await mcpServer.connect(transport);
+// 4. Transporte Streamable HTTP (Recomendado para Vercel y Vertex AI)
+// Usamos el modo stateless configurando sessionIdGenerator: undefined
+const transport = new StreamableHTTPServerTransport({
+  sessionIdGenerator: undefined,
 });
 
-mcpApp.post('/mcp/messages', async (req, res) => {
-  if (!activeTransport) {
-    return res.status(400).send('No active SSE connection.');
+mcpServer.connect(transport).catch(console.error);
+
+// Streamable HTTP maneja tanto GET como POST en el mismo handler.
+// Agregamos rutas catch-all bajo /mcp para que el transporte resuelva la solicitud.
+mcpApp.use('/mcp', async (req, res) => {
+  try {
+    await transport.handleRequest(req, res, req.body);
+  } catch (error) {
+    console.error('[MCP Transport Error]:', error);
+    if (!res.headersSent) {
+      res.status(500).send('Transport error');
+    }
   }
-  await activeTransport.handlePostMessage(req, res);
 });
 
 export default mcpApp;
