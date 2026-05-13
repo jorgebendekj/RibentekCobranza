@@ -25,8 +25,8 @@ function createMcpServer() {
     return {
       tools: [
         {
-          name: 'consultar_facturas_pendientes',
-          description: 'Consulta las facturas/deudas en estado pendiente de un usuario/cliente utilizando su teléfono.',
+          name: 'obtener_resumen_cliente',
+          description: 'Obtiene un resumen general de la deuda del cliente (total adeudado, cantidad de facturas pendientes).',
           inputSchema: {
             type: 'object',
             properties: {
@@ -36,57 +36,139 @@ function createMcpServer() {
             required: ['tenant_id', 'phone_number'],
           },
         },
+        {
+          name: 'listar_facturas_cliente',
+          description: 'Lista todas las facturas/deudas específicas de un cliente.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              tenant_id: { type: 'string', description: 'El ID del workspace (empresa)' },
+              phone_number: { type: 'string', description: 'El teléfono del cliente' },
+              status: { type: 'string', description: 'Estado de la factura (Pending, Paid). Por defecto es Pending.', enum: ['Pending', 'Paid'] }
+            },
+            required: ['tenant_id', 'phone_number'],
+          },
+        },
+        {
+          name: 'ver_detalle_factura',
+          description: 'Obtiene los detalles específicos de una factura mediante su ID.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              invoice_id: { type: 'string', description: 'El ID único de la factura (debt_details id)' }
+            },
+            required: ['invoice_id'],
+          },
+        }
       ],
     };
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    if (request.params.name === 'consultar_facturas_pendientes') {
+    
+    // Función auxiliar para buscar cliente
+    const getContact = async (tenant_id, phone_number) => {
+      const { data, error } = await supabase
+        .from('contacts')
+        .select('id, name')
+        .eq('tenant_id', tenant_id)
+        .eq('phone_number', phone_number)
+        .is('deleted_at', null)
+        .limit(1);
+      if (error) throw new Error(error.message);
+      if (!data || data.length === 0) return null;
+      return data[0];
+    };
+
+    // 1. OBTENER RESUMEN
+    if (request.params.name === 'obtener_resumen_cliente') {
       const { tenant_id, phone_number } = request.params.arguments;
       try {
-        const { data: contacts, error: contactErr } = await supabase
-          .from('contacts')
-          .select('id, name')
-          .eq('tenant_id', tenant_id)
-          .eq('phone_number', phone_number)
-          .is('deleted_at', null);
-
-        if (contactErr) throw new Error(contactErr.message);
-        if (!contacts || contacts.length === 0) {
-          return { content: [{ type: 'text', text: `No se encontró cliente con el teléfono ${phone_number}.` }], isError: true };
-        }
+        const contact = await getContact(tenant_id, phone_number);
+        if (!contact) return { content: [{ type: 'text', text: `No se encontró cliente con el teléfono ${phone_number}.` }], isError: true };
 
         const { data: debts, error: debtsErr } = await supabase
-          .from('debt_details')
-          .select('id, debt_description, total, expiration_date')
-          .eq('contact_id', contacts[0].id)
-          .eq('debt_status', 'Pending')
-          .is('deleted_at', null);
+          .from('debts')
+          .select('total_pending, debt_pending_count, debt_status')
+          .eq('tenant_id', tenant_id)
+          .eq('contact_id', contact.id)
+          .is('deleted_at', null)
+          .limit(1);
 
         if (debtsErr) throw new Error(debtsErr.message);
-
         if (!debts || debts.length === 0) {
-          return { content: [{ type: 'text', text: `El cliente ${contacts[0].name} no tiene deudas pendientes.` }] };
+          return { content: [{ type: 'text', text: `El cliente ${contact.name} no tiene registros de deuda globales.` }] };
         }
 
-        const totalDeuda = debts.reduce((sum, d) => sum + Number(d.total), 0);
-        const resultado = {
-          cliente: contacts[0].name,
-          resumen: `Tiene ${debts.length} factura(s) pendiente(s). Deuda total: $${totalDeuda.toFixed(2)}`,
-          facturas: debts.map(d => ({
-            concepto: d.debt_description,
-            total: Number(d.total),
-            saldo_pendiente: Number(d.total),
-            fecha_vencimiento: d.expiration_date,
-          }))
+        const summary = {
+          cliente: contact.name,
+          estado_general: debts[0].debt_status,
+          cantidad_facturas_pendientes: debts[0].debt_pending_count,
+          total_adeudado: debts[0].total_pending
         };
 
-        return { content: [{ type: 'text', text: JSON.stringify(resultado, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: `Error interno: ${err.message}` }], isError: true };
       }
     }
-    throw new Error('Herramienta no encontrada');
+
+    // 2. LISTAR FACTURAS
+    if (request.params.name === 'listar_facturas_cliente') {
+      const { tenant_id, phone_number, status = 'Pending' } = request.params.arguments;
+      try {
+        const contact = await getContact(tenant_id, phone_number);
+        if (!contact) return { content: [{ type: 'text', text: `No se encontró cliente con el teléfono ${phone_number}.` }], isError: true };
+
+        const { data: debtDetails, error: debtErr } = await supabase
+          .from('debt_details')
+          .select('id, debt_description, total, expiration_date, debt_status')
+          .eq('contact_id', contact.id)
+          .eq('debt_status', status)
+          .is('deleted_at', null);
+
+        if (debtErr) throw new Error(debtErr.message);
+        if (!debtDetails || debtDetails.length === 0) {
+          return { content: [{ type: 'text', text: `El cliente ${contact.name} no tiene facturas en estado ${status}.` }] };
+        }
+
+        const list = debtDetails.map(d => ({
+          id_factura: d.id,
+          concepto: d.debt_description || 'Sin concepto',
+          monto: Number(d.total),
+          estado: d.debt_status,
+          fecha_vencimiento: d.expiration_date
+        }));
+
+        return { content: [{ type: 'text', text: JSON.stringify({ cliente: contact.name, facturas: list }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error interno: ${err.message}` }], isError: true };
+      }
+    }
+
+    // 3. VER DETALLE DE FACTURA
+    if (request.params.name === 'ver_detalle_factura') {
+      const { invoice_id } = request.params.arguments;
+      try {
+        const { data: detail, error } = await supabase
+          .from('debt_details')
+          .select('*')
+          .eq('id', invoice_id)
+          .is('deleted_at', null)
+          .limit(1);
+
+        if (error) throw new Error(error.message);
+        if (!detail || detail.length === 0) {
+          return { content: [{ type: 'text', text: `No se encontró la factura con ID ${invoice_id}.` }], isError: true };
+        }
+
+        return { content: [{ type: 'text', text: JSON.stringify(detail[0], null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error interno: ${err.message}` }], isError: true };
+      }
+    }
+
+    throw new Error(`Herramienta no encontrada: ${request.params.name}`);
   });
 
   return server;
