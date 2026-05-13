@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createClient } from '@supabase/supabase-js';
 
@@ -11,26 +12,20 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'placeholder-key';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Esta app Express está totalmente separada de tu app principal (server/index.js)
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
 const mcpApp = express();
 mcpApp.use(cors());
 mcpApp.use(express.json());
 
-// 1. Instanciar el Servidor MCP
-const mcpServer = new Server(
-  {
-    name: 'AiCobranzas-Standalone-MCP',
-    version: '1.0.0',
-  },
-  {
-    capabilities: {
-      tools: {}, 
-    },
-  }
-);
+// Función constructora para aislar el estado de cada conexión
+function createMcpServer() {
+  const server = new Server(
+    { name: 'AiCobranzas-MCP', version: '1.0.0' },
+    { capabilities: { tools: {} } }
+  );
 
-// 2. Registrar la herramienta
-mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
@@ -104,41 +99,73 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: JSON.stringify(resultado, null, 2) }] };
     } catch (err) {
       return { content: [{ type: 'text', text: `Error interno: ${err.message}` }], isError: true };
+
+        return { content: [{ type: 'text', text: JSON.stringify(resultado, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error interno: ${err.message}` }], isError: true };
+      }
     }
-  }
-  throw new Error('Herramienta no encontrada');
-});
+    throw new Error('Herramienta no encontrada');
+  });
 
-// 4. Transporte Streamable HTTP (Recomendado para Vercel y Vertex AI)
-// Usamos el modo stateless configurando sessionIdGenerator: undefined
-const transport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: undefined,
-});
-
-mcpServer.connect(transport).catch(console.error);
+  return server;
+}
 
 // Endpoint de validación rápida para el navegador
 mcpApp.get('/mcp/status', (req, res) => {
   res.json({
     status: 'online',
     protocol: 'mcp',
-    transport: 'streamable_http',
+    transport: 'sse',
     version: '1.0.0',
     tools: ['consultar_facturas_pendientes']
   });
 });
 
-// Streamable HTTP maneja tanto GET como POST en el mismo handler.
-// Agregamos rutas catch-all bajo /mcp para que el transporte resuelva la solicitud.
-mcpApp.use('/mcp', async (req, res) => {
-  try {
-    await transport.handleRequest(req, res, req.body);
-  } catch (error) {
-    console.error('[MCP Transport Error]:', error);
-    if (!res.headersSent) {
-      res.status(500).send('Transport error');
-    }
+// ==========================================
+// Transporte SSE (Requerido por n8n, Claude Desktop, etc)
+// ==========================================
+const activeSessions = new Map();
+
+mcpApp.get('/mcp/sse', async (req, res) => {
+  console.log('[MCP] Nueva conexión SSE inicializada');
+  
+  // En Vercel, los headers son cruciales para mantener el SSE abierto
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const transport = new SSEServerTransport('/mcp/messages', res);
+  const server = createMcpServer();
+  
+  await server.connect(transport);
+  
+  // El transport.sessionId se genera automáticamente en SSEServerTransport
+  if (transport.sessionId) {
+    activeSessions.set(transport.sessionId, transport);
+    
+    // Limpiar al desconectar
+    res.on('close', () => {
+      console.log(`[MCP] Conexión SSE cerrada: ${transport.sessionId}`);
+      activeSessions.delete(transport.sessionId);
+    });
   }
+});
+
+mcpApp.post('/mcp/messages', async (req, res) => {
+  // n8n y otros clientes envían el sessionId en la URL: ?sessionId=...
+  const sessionId = req.query.sessionId;
+  
+  if (!sessionId) {
+    return res.status(400).send('Falta sessionId en la URL');
+  }
+
+  const transport = activeSessions.get(sessionId);
+  if (!transport) {
+    return res.status(404).send('Sesión no encontrada o ya expiró');
+  }
+
+  await transport.handlePostMessage(req, res, req.body);
 });
 
 export default mcpApp;
