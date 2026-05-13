@@ -822,8 +822,8 @@ export function Bandeja() {
 
                   {/* Messages area */}
                   <div className="flex-1 overflow-y-auto px-6 py-5 space-y-3.5">
-                    <div className="sticky top-0 z-10 -mt-5 mb-3 bg-[#f7f8fc]/90 backdrop-blur-sm pt-5">
-                      <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-[10px] font-medium text-slate-500">
+                    <div className="sticky top-0 z-10 -mt-5 mb-3 bg-[#f7f8fc]/90 backdrop-blur-sm pt-5 flex justify-center">
+                      <div className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-[10px] font-medium text-slate-500 shadow-sm">
                         Conversación
                       </div>
                     </div>
