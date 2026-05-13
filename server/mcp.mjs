@@ -117,6 +117,17 @@ const transport = new StreamableHTTPServerTransport({
 
 mcpServer.connect(transport).catch(console.error);
 
+// Endpoint de validación rápida para el navegador
+mcpApp.get('/mcp/status', (req, res) => {
+  res.json({
+    status: 'online',
+    protocol: 'mcp',
+    transport: 'streamable_http',
+    version: '1.0.0',
+    tools: ['consultar_facturas_pendientes']
+  });
+});
+
 // Streamable HTTP maneja tanto GET como POST en el mismo handler.
 // Agregamos rutas catch-all bajo /mcp para que el transporte resuelva la solicitud.
 mcpApp.use('/mcp', async (req, res) => {
