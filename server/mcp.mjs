@@ -2,11 +2,12 @@ import express from 'express';
 import cors from 'cors';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createClient } from '@supabase/supabase-js';
 
 // No necesitamos dotenv si lo deployas a Vercel, Vercel inyectará las variables de entorno automáticamente.
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || 'https://placeholder.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'placeholder-key';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
@@ -29,7 +30,7 @@ const mcpServer = new Server(
 );
 
 // 2. Registrar la herramienta
-mcpServer.setRequestHandler('tools/list', async () => {
+mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
@@ -55,7 +56,7 @@ mcpServer.setRequestHandler('tools/list', async () => {
 });
 
 // 3. Lógica
-mcpServer.setRequestHandler('tools/call', async (request) => {
+mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name === 'consultar_facturas_pendientes') {
     const { tenant_id, phone_number } = request.params.arguments;
     try {
