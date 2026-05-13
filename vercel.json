@@ -6,6 +6,7 @@
     { "source": "/webhooks/(.*)",      "destination": "/api/index.js" },
     { "source": "/invites/(.*)",       "destination": "/api/index.js" },
     { "source": "/setup/(.*)",         "destination": "/api/index.js" },
+    { "source": "/mcp/(.*)",           "destination": "/api/mcp.js" },
 
     {
       "source": "/admin/(.*)",
