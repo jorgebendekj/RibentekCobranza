@@ -70,6 +70,29 @@ function createMcpServer() {
             },
             required: ['phone_number'],
           },
+        },
+        {
+          name: 'generar_qr_factura',
+          description: 'Genera un código QR de pago asociado a una factura (debt_detail). Retorna el ID del QR, el monto, y la URL de simulación de pago.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              debt_detail_id: { type: 'string', description: 'El ID de la factura (debt_details) a la que se asociará el QR' },
+              base_url: { type: 'string', description: 'URL base del servidor (ej: https://tudominio.vercel.app). Necesario para construir la URL de simulación.' }
+            },
+            required: ['debt_detail_id', 'base_url'],
+          },
+        },
+        {
+          name: 'simular_pago_qr',
+          description: 'Simula el pago de un código QR. Marca el QR como pagado y actualiza la factura vinculada a estado Paid.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              qr_id: { type: 'string', description: 'El ID del QR a pagar' }
+            },
+            required: ['qr_id'],
+          },
         }
       ],
     };
@@ -218,6 +241,120 @@ function createMcpServer() {
       }
     }
 
+    // 5. GENERAR QR FACTURA
+    if (request.params.name === 'generar_qr_factura') {
+      const { debt_detail_id, base_url } = request.params.arguments;
+      try {
+        // Fetch invoice
+        const { data: detail, error: detailErr } = await supabase
+          .from('debt_details')
+          .select('id, total, debt_status, debt_description, contact_id')
+          .eq('id', debt_detail_id)
+          .is('deleted_at', null)
+          .limit(1);
+
+        if (detailErr) throw new Error(detailErr.message);
+        if (!detail || detail.length === 0) {
+          return { content: [{ type: 'text', text: `No se encontró factura con ID ${debt_detail_id}.` }], isError: true };
+        }
+
+        const invoice = detail[0];
+        if (invoice.debt_status === 'Paid') {
+          return { content: [{ type: 'text', text: 'Esta factura ya está pagada.' }], isError: true };
+        }
+
+        // Create QR
+        const { data: qr, error: qrErr } = await supabase
+          .from('qrs')
+          .insert({ amount: invoice.total, paid: false, paid_at: false })
+          .select()
+          .single();
+
+        if (qrErr) throw new Error(qrErr.message);
+
+        // Link QR to debt_detail
+        const { error: linkErr } = await supabase
+          .from('debt_detail_qrs')
+          .insert({ debt_detail_id: invoice.id, qr_id: qr.id });
+
+        if (linkErr) throw new Error(linkErr.message);
+
+        const cleanBase = base_url.replace(/\/+$/, '');
+        const result = {
+          qr_id: qr.id,
+          amount: qr.amount,
+          paid: false,
+          debt_detail_id: invoice.id,
+          simulate_url: `${cleanBase}/mcp/qr/simulate/${qr.id}`,
+          pay_url: `${cleanBase}/mcp/qr/pay/${qr.id}`,
+        };
+
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error interno: ${err.message}` }], isError: true };
+      }
+    }
+
+    // 6. SIMULAR PAGO QR
+    if (request.params.name === 'simular_pago_qr') {
+      const { qr_id } = request.params.arguments;
+      try {
+        // Verify QR
+        const { data: qrData, error: qrErr } = await supabase
+          .from('qrs')
+          .select('id, paid')
+          .eq('id', qr_id)
+          .limit(1);
+
+        if (qrErr) throw new Error(qrErr.message);
+        if (!qrData || qrData.length === 0) {
+          return { content: [{ type: 'text', text: `QR no encontrado con ID ${qr_id}.` }], isError: true };
+        }
+        if (qrData[0].paid) {
+          return { content: [{ type: 'text', text: JSON.stringify({ success: true, message: 'Este QR ya fue pagado previamente.' }) }] };
+        }
+
+        // Mark QR paid
+        const { error: updateQrErr } = await supabase
+          .from('qrs')
+          .update({ paid: true, paid_at: true })
+          .eq('id', qr_id);
+
+        if (updateQrErr) throw new Error(updateQrErr.message);
+
+        // Get linked debt_details and update to Paid
+        const { data: links, error: linkErr } = await supabase
+          .from('debt_detail_qrs')
+          .select('debt_detail_id')
+          .eq('qr_id', qr_id);
+
+        if (linkErr) throw new Error(linkErr.message);
+
+        const updatedIds = [];
+        if (links && links.length > 0) {
+          for (const link of links) {
+            const { error: updateErr } = await supabase
+              .from('debt_details')
+              .update({ debt_status: 'Paid' })
+              .eq('id', link.debt_detail_id);
+
+            if (!updateErr) updatedIds.push(link.debt_detail_id);
+          }
+        }
+
+        const result = {
+          success: true,
+          message: 'Pago simulado procesado correctamente.',
+          qr_id,
+          facturas_actualizadas: updatedIds,
+        };
+
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error interno: ${err.message}` }], isError: true };
+      }
+    }
+
     throw new Error(`Herramienta no encontrada: ${request.params.name}`);
   });
 
@@ -235,7 +372,9 @@ mcpApp.get('/mcp/status', (req, res) => {
       'obtener_resumen_cliente',
       'listar_facturas_cliente',
       'ver_detalle_factura',
-      'buscar_tenants_por_telefono'
+      'buscar_tenants_por_telefono',
+      'generar_qr_factura',
+      'simular_pago_qr'
     ]
   });
 });
