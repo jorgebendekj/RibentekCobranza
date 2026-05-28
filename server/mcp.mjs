@@ -59,6 +59,17 @@ function createMcpServer() {
             },
             required: ['invoice_id'],
           },
+        },
+        {
+          name: 'buscar_tenants_por_telefono',
+          description: 'Busca todas las empresas (tenants) a las que está asociado un número de teléfono de cliente.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              phone_number: { type: 'string', description: 'El teléfono del cliente a buscar' }
+            },
+            required: ['phone_number'],
+          },
         }
       ],
     };
@@ -168,6 +179,45 @@ function createMcpServer() {
       }
     }
 
+    // 4. BUSCAR TENANTS POR TELÉFONO
+    if (request.params.name === 'buscar_tenants_por_telefono') {
+      const { phone_number } = request.params.arguments;
+      try {
+        const { data: contacts, error: contactErr } = await supabase
+          .from('contacts')
+          .select('tenant_id')
+          .eq('phone_number', phone_number)
+          .is('deleted_at', null);
+
+        if (contactErr) throw new Error(contactErr.message);
+        if (!contacts || contacts.length === 0) {
+          return { content: [{ type: 'text', text: JSON.stringify({ asociado: false, tenants: [] }) }] };
+        }
+
+        const tenantIds = [...new Set(contacts.map(c => c.tenant_id).filter(Boolean))];
+        if (tenantIds.length === 0) {
+          return { content: [{ type: 'text', text: JSON.stringify({ asociado: false, tenants: [] }) }] };
+        }
+
+        const { data: tenants, error: tenantErr } = await supabase
+          .from('tenants')
+          .select('id, name')
+          .in('id', tenantIds)
+          .is('deleted_at', null);
+
+        if (tenantErr) throw new Error(tenantErr.message);
+
+        const list = (tenants || []).map(t => ({
+          tenant_id: t.id,
+          nombre: t.name
+        }));
+
+        return { content: [{ type: 'text', text: JSON.stringify({ asociado: true, tenants: list }, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error interno: ${err.message}` }], isError: true };
+      }
+    }
+
     throw new Error(`Herramienta no encontrada: ${request.params.name}`);
   });
 
@@ -181,8 +231,56 @@ mcpApp.get('/mcp/status', (req, res) => {
     protocol: 'mcp',
     transport: 'sse',
     version: '1.0.0',
-    tools: ['consultar_facturas_pendientes']
+    tools: [
+      'obtener_resumen_cliente',
+      'listar_facturas_cliente',
+      'ver_detalle_factura',
+      'buscar_tenants_por_telefono'
+    ]
   });
+});
+
+// Endpoint directo HTTP REST para buscar tenants sin requerir protocolo MCP completo
+mcpApp.get('/mcp/tenants-by-phone', async (req, res) => {
+  const { phone_number } = req.query;
+  if (!phone_number) {
+    return res.status(400).json({ error: 'Falta el parámetro phone_number en la query' });
+  }
+
+  try {
+    const { data: contacts, error: contactErr } = await supabase
+      .from('contacts')
+      .select('tenant_id')
+      .eq('phone_number', phone_number)
+      .is('deleted_at', null);
+
+    if (contactErr) throw new Error(contactErr.message);
+    if (!contacts || contacts.length === 0) {
+      return res.json({ asociado: false, tenants: [] });
+    }
+
+    const tenantIds = [...new Set(contacts.map(c => c.tenant_id).filter(Boolean))];
+    if (tenantIds.length === 0) {
+      return res.json({ asociado: false, tenants: [] });
+    }
+
+    const { data: tenants, error: tenantErr } = await supabase
+      .from('tenants')
+      .select('id, name')
+      .in('id', tenantIds)
+      .is('deleted_at', null);
+
+    if (tenantErr) throw new Error(tenantErr.message);
+
+    const list = (tenants || []).map(t => ({
+      tenant_id: t.id,
+      nombre: t.name
+    }));
+
+    return res.json({ asociado: true, tenants: list });
+  } catch (err) {
+    return res.status(500).json({ error: `Error interno: ${err.message}` });
+  }
 });
 
 // ==========================================
