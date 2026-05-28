@@ -284,6 +284,505 @@ mcpApp.get('/mcp/tenants-by-phone', async (req, res) => {
 });
 
 // ==========================================
+// QR Payment Simulation Endpoints
+// ==========================================
+
+// Helper: resolve base URL from request
+function getBaseUrl(req) {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  return `${proto}://${host}`;
+}
+
+// POST /mcp/qr/generate — Generate a QR linked to a debt_detail
+mcpApp.post('/mcp/qr/generate', async (req, res) => {
+  const { debt_detail_id } = req.body;
+  if (!debt_detail_id) {
+    return res.status(400).json({ error: 'Falta debt_detail_id en el body' });
+  }
+
+  try {
+    // 1. Fetch the invoice
+    const { data: detail, error: detailErr } = await supabase
+      .from('debt_details')
+      .select('id, total, debt_status, debt_description, contact_id')
+      .eq('id', debt_detail_id)
+      .is('deleted_at', null)
+      .limit(1);
+
+    if (detailErr) throw new Error(detailErr.message);
+    if (!detail || detail.length === 0) {
+      return res.status(404).json({ error: `No se encontró factura con ID ${debt_detail_id}` });
+    }
+
+    const invoice = detail[0];
+
+    if (invoice.debt_status === 'Paid') {
+      return res.status(409).json({ error: 'Esta factura ya está pagada' });
+    }
+
+    // 2. Create QR record
+    const { data: qr, error: qrErr } = await supabase
+      .from('qrs')
+      .insert({
+        amount: invoice.total,
+        paid: false,
+        paid_at: false,
+      })
+      .select()
+      .single();
+
+    if (qrErr) throw new Error(qrErr.message);
+
+    // 3. Link QR to debt_detail
+    const { error: linkErr } = await supabase
+      .from('debt_detail_qrs')
+      .insert({
+        debt_detail_id: invoice.id,
+        qr_id: qr.id,
+      });
+
+    if (linkErr) throw new Error(linkErr.message);
+
+    const baseUrl = getBaseUrl(req);
+    const simulateUrl = `${baseUrl}/mcp/qr/simulate/${qr.id}`;
+
+    return res.json({
+      qr_id: qr.id,
+      amount: qr.amount,
+      paid: qr.paid,
+      debt_detail_id: invoice.id,
+      simulate_url: simulateUrl,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: `Error interno: ${err.message}` });
+  }
+});
+
+// GET /mcp/qr/simulate/:qr_id — Interactive payment simulation page
+mcpApp.get('/mcp/qr/simulate/:qr_id', async (req, res) => {
+  const { qr_id } = req.params;
+
+  try {
+    // Fetch QR
+    const { data: qrData, error: qrErr } = await supabase
+      .from('qrs')
+      .select('*')
+      .eq('id', qr_id)
+      .limit(1);
+
+    if (qrErr) throw new Error(qrErr.message);
+    if (!qrData || qrData.length === 0) {
+      return res.status(404).send('QR no encontrado');
+    }
+    const qr = qrData[0];
+
+    // Fetch linked debt_detail
+    const { data: links } = await supabase
+      .from('debt_detail_qrs')
+      .select('debt_detail_id')
+      .eq('qr_id', qr_id)
+      .limit(1);
+
+    let invoice = null;
+    let contact = null;
+    let tenant = null;
+
+    if (links && links.length > 0) {
+      const { data: dd } = await supabase
+        .from('debt_details')
+        .select('id, debt_description, total, expiration_date, debt_status, contact_id, debt_id')
+        .eq('id', links[0].debt_detail_id)
+        .limit(1);
+
+      if (dd && dd.length > 0) {
+        invoice = dd[0];
+
+        const { data: ct } = await supabase
+          .from('contacts')
+          .select('id, name, phone_number, tenant_id')
+          .eq('id', invoice.contact_id)
+          .limit(1);
+
+        if (ct && ct.length > 0) {
+          contact = ct[0];
+
+          const { data: tn } = await supabase
+            .from('tenants')
+            .select('id, name')
+            .eq('id', contact.tenant_id)
+            .limit(1);
+
+          if (tn && tn.length > 0) tenant = tn[0];
+        }
+      }
+    }
+
+    const baseUrl = getBaseUrl(req);
+    const payUrl = `${baseUrl}/mcp/qr/pay/${qr_id}`;
+    const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(`${baseUrl}/mcp/qr/simulate/${qr_id}`)}`;
+    const isPaid = qr.paid;
+
+    const amountFormatted = Number(qr.amount).toLocaleString('es-BO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pago QR — ${tenant ? tenant.name : 'AiCobranzas'}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+      color: #e2e8f0;
+      padding: 24px;
+    }
+    .card {
+      width: 100%;
+      max-width: 440px;
+      background: rgba(255,255,255,0.06);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 24px;
+      padding: 40px 32px;
+      text-align: center;
+      box-shadow: 0 32px 64px rgba(0,0,0,0.4);
+      animation: slideUp 0.6s ease-out;
+    }
+    @keyframes slideUp {
+      from { opacity:0; transform:translateY(30px); }
+      to   { opacity:1; transform:translateY(0); }
+    }
+    .logo { font-size: 14px; font-weight: 600; letter-spacing: 2px; text-transform: uppercase; color: #a78bfa; margin-bottom: 8px; }
+    .company { font-size: 22px; font-weight: 800; color: #fff; margin-bottom: 4px; }
+    .subtitle { font-size: 13px; color: #94a3b8; margin-bottom: 28px; }
+    .qr-wrap {
+      display: inline-block;
+      padding: 16px;
+      background: #fff;
+      border-radius: 16px;
+      margin-bottom: 28px;
+      box-shadow: 0 8px 24px rgba(167,139,250,0.25);
+      transition: transform 0.3s;
+    }
+    .qr-wrap:hover { transform: scale(1.04); }
+    .qr-wrap img { display: block; width: 200px; height: 200px; }
+    .amount-label { font-size: 13px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+    .amount { font-size: 38px; font-weight: 800; color: #fff; margin-bottom: 8px; }
+    .amount span { font-size: 18px; font-weight: 600; color: #a78bfa; }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin: 24px 0;
+      text-align: left;
+    }
+    .info-item { background: rgba(255,255,255,0.04); border-radius: 12px; padding: 12px 14px; }
+    .info-item .label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+    .info-item .value { font-size: 14px; font-weight: 600; color: #e2e8f0; word-break: break-word; }
+    .info-full { grid-column: 1 / -1; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 16px;
+      border-radius: 100px;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      margin-bottom: 24px;
+    }
+    .badge-pending { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.3); }
+    .badge-paid { background: rgba(52,211,153,0.15); color: #34d399; border: 1px solid rgba(52,211,153,0.3); }
+    .badge svg { width: 16px; height: 16px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 100%;
+      padding: 16px 24px;
+      border: none;
+      border-radius: 14px;
+      font-family: 'Inter', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.25s;
+      position: relative;
+      overflow: hidden;
+    }
+    .btn-pay {
+      background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+      color: #fff;
+      box-shadow: 0 8px 24px rgba(139,92,246,0.35);
+    }
+    .btn-pay:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 32px rgba(139,92,246,0.5);
+    }
+    .btn-pay:active:not(:disabled) { transform: translateY(0); }
+    .btn-pay:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-paid {
+      background: linear-gradient(135deg, #059669, #047857);
+      color: #fff;
+      cursor: default;
+    }
+    .spinner {
+      width: 20px; height: 20px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      display: none;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .confetti-canvas { position: fixed; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:9999; }
+    @keyframes checkmark {
+      0%   { stroke-dashoffset: 48; }
+      100% { stroke-dashoffset: 0; }
+    }
+    .check-icon { display: none; }
+    .check-icon svg {
+      stroke-dasharray: 48;
+      stroke-dashoffset: 48;
+      animation: checkmark 0.5s ease-out forwards;
+    }
+    .success-glow {
+      animation: glow 1.5s ease-in-out infinite alternate;
+    }
+    @keyframes glow {
+      from { box-shadow: 0 0 8px rgba(52,211,153,0.3); }
+      to   { box-shadow: 0 0 24px rgba(52,211,153,0.6); }
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="logo">⚡ AiCobranzas</div>
+    <div class="company">${tenant ? tenant.name : 'Empresa'}</div>
+    <div class="subtitle">Simulación de Pago por Código QR</div>
+
+    <div class="qr-wrap">
+      <img src="${qrImageUrl}" alt="Código QR de pago" />
+    </div>
+
+    <div class="amount-label">Monto a pagar</div>
+    <div class="amount"><span>Bs. </span>${amountFormatted}</div>
+
+    <div class="info-grid">
+      <div class="info-item">
+        <div class="label">Cliente</div>
+        <div class="value">${contact ? contact.name : '—'}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Teléfono</div>
+        <div class="value">${contact ? contact.phone_number : '—'}</div>
+      </div>
+      <div class="info-item info-full">
+        <div class="label">Concepto</div>
+        <div class="value">${invoice ? (invoice.debt_description || 'Sin descripción') : '—'}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">Vencimiento</div>
+        <div class="value">${invoice ? invoice.expiration_date : '—'}</div>
+      </div>
+      <div class="info-item">
+        <div class="label">ID Factura</div>
+        <div class="value" style="font-size:11px;">${invoice ? invoice.id : '—'}</div>
+      </div>
+    </div>
+
+    <div id="badge">
+      ${isPaid
+        ? '<span class="badge badge-paid success-glow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg> PAGADO</span>'
+        : '<span class="badge badge-pending"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg> PENDIENTE</span>'
+      }
+    </div>
+
+    ${isPaid
+      ? '<button class="btn btn-paid" disabled><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg> Pago Completado</button>'
+      : `<button class="btn btn-pay" id="payBtn" onclick="simulatePay()">
+          <span id="btnText">💳 Confirmar Pago Simulado</span>
+          <div class="spinner" id="spinner"></div>
+          <span class="check-icon" id="checkIcon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg></span>
+        </button>`
+    }
+  </div>
+
+  <canvas class="confetti-canvas" id="confetti"></canvas>
+
+  <script>
+    async function simulatePay() {
+      const btn = document.getElementById('payBtn');
+      const text = document.getElementById('btnText');
+      const spinner = document.getElementById('spinner');
+      const checkIcon = document.getElementById('checkIcon');
+      const badge = document.getElementById('badge');
+
+      btn.disabled = true;
+      text.style.display = 'none';
+      spinner.style.display = 'inline-block';
+
+      try {
+        const resp = await fetch('${payUrl}', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+        const data = await resp.json();
+
+        if (data.success) {
+          spinner.style.display = 'none';
+          checkIcon.style.display = 'inline-flex';
+          btn.className = 'btn btn-paid';
+
+          badge.innerHTML = '<span class="badge badge-paid success-glow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg> PAGADO</span>';
+
+          // Confetti burst
+          launchConfetti();
+
+          setTimeout(() => {
+            btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg> Pago Completado';
+          }, 800);
+        } else {
+          text.textContent = 'Error — Reintentar';
+          text.style.display = 'inline';
+          spinner.style.display = 'none';
+          btn.disabled = false;
+        }
+      } catch (e) {
+        text.textContent = 'Error de red — Reintentar';
+        text.style.display = 'inline';
+        spinner.style.display = 'none';
+        btn.disabled = false;
+      }
+    }
+
+    // Simple confetti implementation
+    function launchConfetti() {
+      const canvas = document.getElementById('confetti');
+      const ctx = canvas.getContext('2d');
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+
+      const colors = ['#8b5cf6','#a78bfa','#34d399','#fbbf24','#f472b6','#60a5fa','#fff'];
+      const pieces = [];
+      for (let i = 0; i < 150; i++) {
+        pieces.push({
+          x: canvas.width * 0.5 + (Math.random() - 0.5) * 200,
+          y: canvas.height * 0.5,
+          vx: (Math.random() - 0.5) * 16,
+          vy: -(Math.random() * 14 + 4),
+          w: Math.random() * 8 + 4,
+          h: Math.random() * 6 + 2,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          rot: Math.random() * 360,
+          rv: (Math.random() - 0.5) * 12,
+          gravity: 0.25 + Math.random() * 0.15,
+          opacity: 1,
+        });
+      }
+
+      let frame = 0;
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        let alive = false;
+        for (const p of pieces) {
+          p.x += p.vx;
+          p.vy += p.gravity;
+          p.y += p.vy;
+          p.rot += p.rv;
+          if (frame > 60) p.opacity -= 0.015;
+          if (p.opacity <= 0) continue;
+          alive = true;
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(p.rot * Math.PI / 180);
+          ctx.globalAlpha = Math.max(0, p.opacity);
+          ctx.fillStyle = p.color;
+          ctx.fillRect(-p.w/2, -p.h/2, p.w, p.h);
+          ctx.restore();
+        }
+        frame++;
+        if (alive && frame < 200) requestAnimationFrame(draw);
+        else ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      requestAnimationFrame(draw);
+    }
+  </script>
+</body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(html);
+  } catch (err) {
+    return res.status(500).json({ error: `Error interno: ${err.message}` });
+  }
+});
+
+// POST /mcp/qr/pay/:qr_id — Process simulated payment
+mcpApp.post('/mcp/qr/pay/:qr_id', async (req, res) => {
+  const { qr_id } = req.params;
+
+  try {
+    // 1. Verify QR exists and is not already paid
+    const { data: qrData, error: qrErr } = await supabase
+      .from('qrs')
+      .select('id, paid')
+      .eq('id', qr_id)
+      .limit(1);
+
+    if (qrErr) throw new Error(qrErr.message);
+    if (!qrData || qrData.length === 0) {
+      return res.status(404).json({ error: 'QR no encontrado' });
+    }
+    if (qrData[0].paid) {
+      return res.json({ success: true, message: 'Este QR ya fue pagado previamente' });
+    }
+
+    // 2. Mark QR as paid
+    const { error: updateQrErr } = await supabase
+      .from('qrs')
+      .update({ paid: true, paid_at: true })
+      .eq('id', qr_id);
+
+    if (updateQrErr) throw new Error(updateQrErr.message);
+
+    // 3. Get linked debt_detail
+    const { data: links, error: linkErr } = await supabase
+      .from('debt_detail_qrs')
+      .select('debt_detail_id')
+      .eq('qr_id', qr_id);
+
+    if (linkErr) throw new Error(linkErr.message);
+
+    // 4. Update each linked debt_detail to Paid
+    if (links && links.length > 0) {
+      for (const link of links) {
+        const { error: updateErr } = await supabase
+          .from('debt_details')
+          .update({ debt_status: 'Paid' })
+          .eq('id', link.debt_detail_id);
+
+        if (updateErr) {
+          console.error(`[QR] Error actualizando debt_detail ${link.debt_detail_id}:`, updateErr.message);
+        }
+      }
+    }
+
+    return res.json({ success: true, message: 'Pago simulado procesado correctamente' });
+  } catch (err) {
+    return res.status(500).json({ error: `Error interno: ${err.message}` });
+  }
+});
+
+// ==========================================
 // Transporte SSE (Requerido por n8n, Claude Desktop, etc)
 // ==========================================
 const activeSessions = new Map();
