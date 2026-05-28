@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import PDFDocument from 'pdfkit';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -918,6 +919,110 @@ mcpApp.post('/mcp/qr/pay/:qr_id', async (req, res) => {
     return res.json({ success: true, message: 'Pago simulado procesado correctamente' });
   } catch (err) {
     return res.status(500).json({ error: `Error interno: ${err.message}` });
+  }
+});
+
+// GET /mcp/receipt/:debt_detail_id/pdf — On-the-fly PDF receipt generation
+mcpApp.get('/mcp/receipt/:debt_detail_id/pdf', async (req, res) => {
+  const { debt_detail_id } = req.params;
+
+  try {
+    // 1. Fetch debt_detail
+    const { data: dd, error: ddErr } = await supabase
+      .from('debt_details')
+      .select('id, debt_description, total, debt_status, created_at, expiration_date, contact_id')
+      .eq('id', debt_detail_id)
+      .limit(1);
+
+    if (ddErr) throw new Error(ddErr.message);
+    if (!dd || dd.length === 0) {
+      return res.status(404).send('Factura no encontrada');
+    }
+    const invoice = dd[0];
+
+    // 2. Fetch contact
+    const { data: ct, error: ctErr } = await supabase
+      .from('contacts')
+      .select('name, phone_number, tenant_id')
+      .eq('id', invoice.contact_id)
+      .limit(1);
+
+    if (ctErr) throw new Error(ctErr.message);
+    const contact = ct && ct.length > 0 ? ct[0] : { name: 'Cliente Desconocido', phone_number: '', tenant_id: null };
+
+    // 3. Fetch tenant
+    let tenantName = 'AiCobranzas';
+    if (contact.tenant_id) {
+      const { data: tn } = await supabase
+        .from('tenants')
+        .select('name')
+        .eq('id', contact.tenant_id)
+        .limit(1);
+      if (tn && tn.length > 0) tenantName = tn[0].name;
+    }
+
+    // 4. Generate PDF
+    const doc = new PDFDocument({ margin: 50, size: 'A4' });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="recibo-${debt_detail_id}.pdf"`);
+
+    doc.pipe(res);
+
+    // Styling & Content
+    doc.fillColor('#4f46e5').fontSize(24).text('RECIBO DE PAGO', { align: 'right' });
+    doc.moveDown(0.5);
+    doc.fillColor('#1f2937').fontSize(14).text(tenantName, { align: 'right' });
+    doc.fillColor('#6b7280').fontSize(10).text(`Generado: ${new Date().toLocaleDateString('es-BO')}`, { align: 'right' });
+    
+    doc.moveDown(3);
+    
+    // Status Badge
+    if (invoice.debt_status === 'Paid') {
+      doc.rect(50, doc.y, 100, 25).fill('#dcfce7');
+      doc.fillColor('#166534').fontSize(12).text('PAGADO', 50, doc.y - 20, { width: 100, align: 'center' });
+    } else {
+      doc.rect(50, doc.y, 100, 25).fill('#fef3c7');
+      doc.fillColor('#92400e').fontSize(12).text('PENDIENTE', 50, doc.y - 20, { width: 100, align: 'center' });
+    }
+
+    doc.moveDown(3);
+
+    // Client Info
+    doc.fillColor('#374151').fontSize(12).text('DATOS DEL CLIENTE', { underline: true });
+    doc.moveDown(0.5);
+    doc.fontSize(10).text(`Nombre: ${contact.name}`);
+    doc.text(`Teléfono: ${contact.phone_number}`);
+    
+    doc.moveDown(2);
+
+    // Invoice Info
+    doc.fontSize(12).text('DETALLE DE FACTURACIÓN', { underline: true });
+    doc.moveDown(0.5);
+    doc.fontSize(10).text(`Concepto: ${invoice.debt_description || 'Sin concepto'}`);
+    doc.text(`ID Transacción: ${invoice.id}`);
+    if (invoice.expiration_date) {
+      doc.text(`Vencimiento Original: ${invoice.expiration_date}`);
+    }
+
+    doc.moveDown(2);
+
+    // Amount
+    doc.rect(50, doc.y, 495, 40).fill('#f3f4f6');
+    doc.fillColor('#111827').fontSize(14).text(`Monto Total: Bs. ${Number(invoice.total).toLocaleString('es-BO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, 60, doc.y - 28);
+
+    doc.moveDown(4);
+
+    // Footer
+    doc.fillColor('#9ca3af').fontSize(8).text('Este documento es un comprobante de pago generado electrónicamente y no tiene validez fiscal salvo que se indique lo contrario.', { align: 'center' });
+
+    doc.end();
+
+  } catch (err) {
+    console.error('[PDF Error]', err);
+    if (!res.headersSent) {
+      return res.status(500).send(`Error generando PDF: ${err.message}`);
+    }
   }
 });
 
