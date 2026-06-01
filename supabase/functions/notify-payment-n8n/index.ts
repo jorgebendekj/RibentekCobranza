@@ -3,9 +3,10 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
-// El usuario puede definir N8N_WEBHOOK_URL en los secretos de Supabase.
-// Si no, usaremos la URL quemada que pasó como fallback, pero se aconseja el secreto.
-const N8N_WEBHOOK_URL = Deno.env.get("N8N_WEBHOOK_URL") || "https://n8n-dev.ribentek.com/webhook-test/bca79ee0-b925-43bb-a8f1-541ec8ea5827";
+// URL del backend de Ribentek (Vercel) donde se envía el mensaje
+const BACKEND_URL = Deno.env.get("BACKEND_URL") || "https://ribentek-cobranza.vercel.app";
+// Secreto compartido para autenticar webhooks internos
+const WEBHOOK_SECRET = Deno.env.get("WEBHOOK_INTERNAL_SECRET") || "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
@@ -18,7 +19,6 @@ Deno.serve(async (req) => {
 
     // El payload que manda el Database Webhook
     const payload = await req.json();
-
     console.log("Recibido webhook de BD:", JSON.stringify(payload));
 
     // Validar que el evento sea de debt_details y tenga record
@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
     const debtDescription = record.debt_description || "Sin concepto";
     const amount = record.debt_amount || record.total;
 
-    // 1. Obtener datos del cliente (contacts)
+    // ─── 1. Obtener datos del cliente (contacts) ───
     const { data: contact, error: contactErr } = await supabase
       .from("contacts")
       .select("name, phone_number, tenant_id")
@@ -46,64 +46,101 @@ Deno.serve(async (req) => {
       .limit(1)
       .single();
 
-    if (contactErr) {
+    if (contactErr || !contact) {
       console.error("Error obteniendo cliente:", contactErr);
       return new Response(JSON.stringify({ error: "Client fetch error" }), { status: 500 });
     }
 
-    // 2. Obtener datos del tenant
+    // ─── 2. Obtener datos del tenant ───
     let tenantName = "AiCobranzas";
-    if (contact?.tenant_id) {
+    if (contact.tenant_id) {
       const { data: tenant } = await supabase
         .from("tenants")
         .select("name")
         .eq("id", contact.tenant_id)
         .limit(1)
         .single();
-      
+
       if (tenant) {
         tenantName = tenant.name;
       }
     }
 
-    // 3. Construir el JSON limpio (Normalizado)
-    const pdfUrl = `https://ribentek-cobranza.vercel.app/mcp/receipt/${invoiceId}/pdf`;
+    // ─── 3. Construir URL del PDF del recibo ───
+    const pdfUrl = `${BACKEND_URL}/mcp/receipt/${invoiceId}/pdf`;
 
-    const cleanPayload = {
-      invoice_id: invoiceId,
-      pdf_url: pdfUrl,
-      debt_description: debtDescription,
-      amount: amount,
-      customer_name: contact?.name || "Cliente",
-      phone_number: contact?.phone_number || "",
-      tenant_name: tenantName
-    };
+    // ─── 4. Formatear monto ───
+    const formattedAmount = `$${Number(amount).toFixed(2)}`;
 
-    console.log("Enviando a n8n:", JSON.stringify(cleanPayload));
-
-    // 4. Mandar a n8n
-    const n8nResponse = await fetch(N8N_WEBHOOK_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(cleanPayload)
-    });
-
-    if (!n8nResponse.ok) {
-      console.error(`Error enviando a n8n: HTTP ${n8nResponse.status}`);
-      return new Response(JSON.stringify({ error: "Failed to forward to n8n" }), { status: 500 });
+    // ─── 5. Limpiar número de teléfono ───
+    const phoneNumber = contact.phone_number?.replace(/[^0-9]/g, "") || "";
+    if (!phoneNumber) {
+      console.error("Cliente sin número de teléfono:", contactId);
+      return new Response(
+        JSON.stringify({ error: "Contact has no phone number" }),
+        { status: 400 }
+      );
     }
 
-    return new Response(JSON.stringify({ success: true, forwarded: true }), {
-      headers: { "Content-Type": "application/json" },
-    });
+    // ─── 6. Llamar al backend de Ribentek para que envíe la plantilla ───
+    const backendPayload = {
+      tenant_id: contact.tenant_id,
+      phone_number: phoneNumber,
+      template_name: "invoice_related",
+      template_parameters: [formattedAmount, debtDescription, "recibo"],
+      header_document: {
+        link: pdfUrl,
+        filename: `Recibo_${invoiceId.substring(0, 8)}.pdf`,
+      },
+      // Metadata extra para contexto
+      metadata: {
+        invoice_id: invoiceId,
+        contact_id: contactId,
+        customer_name: contact.name || "Cliente",
+        tenant_name: tenantName,
+      },
+    };
+
+    console.log("Enviando al backend de Ribentek:", JSON.stringify(backendPayload));
+
+    const backendResponse = await fetch(
+      `${BACKEND_URL}/webhooks/internal/payment-receipt`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-webhook-secret": WEBHOOK_SECRET,
+        },
+        body: JSON.stringify(backendPayload),
+      }
+    );
+
+    const backendResult = await backendResponse.json();
+
+    if (!backendResponse.ok) {
+      console.error("Error del backend:", JSON.stringify(backendResult));
+      return new Response(
+        JSON.stringify({ error: "Backend error", details: backendResult }),
+        { status: 500, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log("Respuesta del backend:", JSON.stringify(backendResult));
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        whatsapp_message_id: backendResult.whatsapp_message_id || null,
+        sent_to: phoneNumber,
+      }),
+      { headers: { "Content-Type": "application/json" } }
+    );
 
   } catch (err) {
     console.error("Internal Edge Function Error:", err);
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
-      headers: { "Content-Type": "application/json" }
+      headers: { "Content-Type": "application/json" },
     });
   }
 });

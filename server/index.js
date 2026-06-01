@@ -3840,6 +3840,227 @@ app.get('/api/meta/templates/sync', requireWorkspaceAdmin, async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════
+// INTERNAL WEBHOOK: Payment Receipt → WhatsApp Template
+// Called by Supabase Edge Function when a debt is marked as Paid
+// ════════════════════════════════════════════════════════════════
+app.post('/webhooks/internal/payment-receipt', async (req, res) => {
+  try {
+    // ── Auth: validate internal webhook secret ──
+    const webhookSecret = process.env.WEBHOOK_INTERNAL_SECRET;
+    const incomingSecret = req.headers['x-webhook-secret'];
+    if (!webhookSecret || incomingSecret !== webhookSecret) {
+      console.warn('[payment-receipt] Invalid or missing webhook secret');
+      return res.status(401).json({ error: 'Unauthorized: invalid webhook secret' });
+    }
+
+    const {
+      tenant_id,
+      phone_number,
+      template_name,
+      template_parameters,
+      header_document,
+      metadata,
+    } = req.body || {};
+
+    if (!tenant_id || !phone_number) {
+      return res.status(400).json({ error: 'tenant_id and phone_number are required' });
+    }
+
+    const toPhone = normalizeWhatsAppPhone(phone_number);
+    if (!toPhone) {
+      return res.status(400).json({ error: 'Invalid phone_number' });
+    }
+
+    const tplName = template_name || 'invoice_related';
+    const tplParams = Array.isArray(template_parameters) ? template_parameters.map(v => String(v ?? '')) : [];
+
+    // ── 1. Fetch WhatsApp configuration for the tenant ──
+    const { data: config, error: configError } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('id, phone_number_id, token, default_template_language')
+      .eq('tenant_id', tenant_id)
+      .is('deleted_at', null)
+      .single();
+
+    if (configError || !config?.phone_number_id) {
+      console.error('[payment-receipt] WhatsApp config not found:', configError?.message);
+      return res.status(400).json({ error: 'WhatsApp not configured or phone_number_id missing' });
+    }
+
+    // ── 2. Fetch the approved template from DB ──
+    const { data: approvedTemplate, error: templateError } = await supabaseAdmin
+      .from('whatsapp_templates')
+      .select('id, template_name, language, meta_status, components')
+      .eq('whatsapp_configuration_id', config.id)
+      .eq('template_name', tplName)
+      .eq('meta_status', 'APPROVED')
+      .is('deleted_at', null)
+      .limit(1)
+      .maybeSingle();
+
+    if (templateError || !approvedTemplate) {
+      console.error('[payment-receipt] Template not found:', tplName, templateError?.message);
+      return res.status(400).json({ error: `Approved template "${tplName}" not found` });
+    }
+
+    const templateLanguage = String(
+      approvedTemplate.language || config.default_template_language || 'es'
+    );
+
+    // ── 3. Build Meta API components (header + body) ──
+    const components = [];
+
+    // Header: Document (PDF)
+    if (header_document?.link) {
+      components.push({
+        type: 'header',
+        parameters: [
+          {
+            type: 'document',
+            document: {
+              link: header_document.link,
+              filename: header_document.filename || 'Recibo.pdf',
+            },
+          },
+        ],
+      });
+    }
+
+    // Body: text parameters
+    if (tplParams.length > 0) {
+      components.push({
+        type: 'body',
+        parameters: tplParams.map(value => ({ type: 'text', text: String(value) })),
+      });
+    }
+
+    // ── 4. Send to Meta Graph API ──
+    const metaPayload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: toPhone,
+      type: 'template',
+      template: {
+        name: approvedTemplate.template_name,
+        language: { code: templateLanguage },
+        ...(components.length > 0 ? { components } : {}),
+      },
+    };
+
+    console.log('[payment-receipt] Sending to Meta:', JSON.stringify(metaPayload));
+
+    const metaRes = await fetch(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/${config.phone_number_id}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(metaPayload),
+      }
+    );
+
+    const metaData = await metaRes.json();
+    if (!metaRes.ok) {
+      const mapped = mapMetaError(metaData.error);
+      console.error('[payment-receipt] Meta API error:', JSON.stringify(metaData));
+      return res.status(metaRes.status).json({
+        error: mapped.message,
+        code: mapped.code,
+        hint: mapped.hint,
+        details: metaData.error,
+      });
+    }
+
+    console.log('[payment-receipt] Meta API OK:', JSON.stringify(metaData));
+
+    // ── 5. Persist message in DB (reuse existing patterns) ──
+    // Find or create contact + thread for this phone
+    let resolvedContactId = metadata?.contact_id || null;
+    let resolvedThreadId = null;
+
+    // Use a system user id or null for automated messages
+    const systemUserId = null;
+
+    try {
+      const resolved = await resolveContactAndThread({
+        tenantId: tenant_id,
+        phoneNumber: toPhone,
+        userId: systemUserId,
+        seedLastMessage: `[TPL] ${approvedTemplate.template_name}`,
+      });
+      resolvedThreadId = resolved.threadId;
+      if (!resolvedContactId) resolvedContactId = resolved.contactId;
+    } catch (resolveErr) {
+      console.warn('[payment-receipt] Could not resolve contact/thread:', resolveErr.message);
+    }
+
+    if (resolvedThreadId) {
+      const savedText = `[TPL] ${approvedTemplate.template_name}`;
+      const templatePreviewBody = tplParams.join(' | ') || '';
+      const richTemplatePayload = buildTemplateRichMessageForDb({
+        kind: 'template',
+        template_name: approvedTemplate.template_name,
+        language: templateLanguage,
+        template_components: approvedTemplate.components || [],
+        sent_components: components || [],
+        text: templatePreviewBody || savedText,
+        ts: new Date().toISOString(),
+      }, savedText);
+
+      const { data: saved, error: saveError } = await supabaseAdmin
+        .from('whatsapp_messages')
+        .insert({
+          whatsapp_thread_id: resolvedThreadId,
+          message_text: richTemplatePayload,
+          incoming: false,
+          read: false,
+          sent_at: new Date().toISOString(),
+          created_by: systemUserId,
+          updated_by: systemUserId,
+        })
+        .select()
+        .single();
+
+      if (saveError) {
+        console.warn('[payment-receipt] Could not persist message:', saveError.message);
+      }
+
+      // Update thread
+      const windowState = await getConversationWindowState({
+        tenantId: tenant_id,
+        phoneNumber: toPhone,
+        explicitThreadId: resolvedThreadId,
+      });
+
+      await supabaseAdmin
+        .from('whatsapp_threads')
+        .update({
+          last_message: savedText,
+          last_interaction: new Date().toISOString(),
+          window_open: windowState.windowOpen,
+          window_expires_at: windowState.windowExpiresAt,
+          last_inbound_at: windowState.lastInboundAt,
+          updated_by: systemUserId,
+        })
+        .eq('id', resolvedThreadId);
+    }
+
+    return res.status(200).json({
+      success: true,
+      whatsapp_message_id: metaData.messages?.[0]?.id || null,
+      template_name: approvedTemplate.template_name,
+      sent_to: toPhone,
+    });
+
+  } catch (err) {
+    console.error('[payment-receipt] Internal error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 if (!process.env.VERCEL) {
@@ -3850,3 +4071,4 @@ if (!process.env.VERCEL) {
 }
 
 export default app;
+
