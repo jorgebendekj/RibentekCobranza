@@ -2,6 +2,13 @@ import OpenAI from 'openai';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import EventSource from 'eventsource';
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  { auth: { autoRefreshToken: false, persistSession: false } }
+);
 
 // Required for SSEClientTransport in Node.js
 global.EventSource = EventSource;
@@ -10,12 +17,26 @@ global.EventSource = EventSource;
  * Ejecuta la lógica del agente de OpenAI conectándose a un servidor MCP
  * para obtener y ejecutar las tools disponibles.
  * 
+ * @param {string} tenantId - UUID of the tenant
  * @param {Array} history - Array de objetos { role: 'user'|'assistant', content: string }
- * @param {string} systemPrompt - Prompt de sistema que instruye al agente
- * @returns {Promise<string>} La respuesta final del agente
+ * @returns {Promise<string|null>} La respuesta final del agente, o null si está desactivado
  */
-export async function runAgentLogic(history, systemPrompt) {
-  const mcpUrl = process.env.MCP_SERVER_URL || 'https://ribentek-cobranza.vercel.app/mcp/sse';
+export async function runAgentLogic(tenantId, history) {
+  // Fetch tenant config
+  const { data: config } = await supabaseAdmin
+    .from('ai_agent_configs')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .single();
+
+  if (config && config.is_active === false) {
+    console.log(`[Agent] Disabled for tenant ${tenantId}`);
+    return null; // disabled
+  }
+
+  const systemPrompt = config?.system_prompt || "Usa las tools dependiendo del contexto";
+  const mcpUrl = config?.mcp_url || process.env.MCP_SERVER_URL || 'https://ribentek-cobranza.vercel.app/mcp/sse';
+
   let transport = null;
   let mcpClient = null;
   let tools = [];
@@ -45,7 +66,7 @@ export async function runAgentLogic(history, systemPrompt) {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   
   const messages = [
-    { role: 'system', content: systemPrompt || "Usa las tools dependiendo del contexto" },
+    { role: 'system', content: systemPrompt },
     ...history
   ];
 

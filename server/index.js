@@ -748,7 +748,7 @@ async function handleAgentReply(tenantId, threadId, contactId, fromPhone) {
        content: decodeRichMessage(m.message_text) || m.message_text || ''
      }));
 
-     const responseText = await runAgentLogic(history);
+     const responseText = await runAgentLogic(tenantId, history);
 
      if (responseText) {
         await fetch(`http://localhost:${process.env.PORT || 3001}/webhooks/internal/agent-message`, {
