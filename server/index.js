@@ -4,6 +4,7 @@ import cors from 'cors';
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import { createClient } from '@supabase/supabase-js';
+import { runAgentLogic } from './services/agent.js';
 
 const app = express();
 app.use(express.json({
@@ -733,6 +734,43 @@ app.get('/webhooks/meta', (req, res) => {
   })().catch(() => res.status(500).send('Webhook verification error'));
 });
 
+async function handleAgentReply(tenantId, threadId, contactId, fromPhone) {
+  try {
+     const { data: messages } = await supabaseAdmin
+       .from('whatsapp_messages')
+       .select('message_text, incoming')
+       .eq('whatsapp_thread_id', threadId)
+       .order('sent_at', { ascending: false })
+       .limit(10);
+     
+     const history = (messages || []).reverse().map(m => ({
+       role: m.incoming ? 'user' : 'assistant',
+       content: decodeRichMessage(m.message_text) || m.message_text || ''
+     }));
+
+     const responseText = await runAgentLogic(history);
+
+     if (responseText) {
+        await fetch(`http://localhost:${process.env.PORT || 3001}/webhooks/internal/agent-message`, {
+           method: 'POST',
+           headers: {
+             'Content-Type': 'application/json',
+             'x-webhook-secret': process.env.WEBHOOK_INTERNAL_SECRET
+           },
+           body: JSON.stringify({
+             tenant_id: tenantId,
+             phone_number: fromPhone,
+             message_type: 'text',
+             message_text: responseText,
+             metadata: { contact_id: contactId }
+           })
+        });
+     }
+  } catch (err) {
+     console.error('[Agent Trigger] error:', err);
+  }
+}
+
 app.post('/webhooks/meta', async (req, res) => {
   const startedAt = Date.now();
   console.log('[webhook] POST /webhooks/meta received');
@@ -904,6 +942,9 @@ app.post('/webhooks/meta', async (req, res) => {
               severity: 'info',
               actionUrl: '/bandeja',
             }).catch((error) => console.error('[notifications] inbound message emit error:', error.message));
+            
+            // Trigger AI Agent asynchronously
+            handleAgentReply(tenantId, threadId, contactId, fromPhone).catch(err => console.error('[Agent] Unhandled trigger error:', err));
           }
         }
 
@@ -4057,6 +4098,243 @@ app.post('/webhooks/internal/payment-receipt', async (req, res) => {
 
   } catch (err) {
     console.error('[payment-receipt] Internal error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════
+// INTERNAL WEBHOOK: AI Agent Message -> WhatsApp
+// Called by n8n to send text or templates from AI agent
+// ════════════════════════════════════════════════════════════════
+app.post('/webhooks/internal/agent-message', async (req, res) => {
+  try {
+    // ── Auth: validate internal webhook secret ──
+    const webhookSecret = process.env.WEBHOOK_INTERNAL_SECRET;
+    const incomingSecret = req.headers['x-webhook-secret'];
+    if (!webhookSecret || incomingSecret !== webhookSecret) {
+      console.warn('[agent-message] Invalid or missing webhook secret');
+      return res.status(401).json({ error: 'Unauthorized: invalid webhook secret' });
+    }
+
+    const {
+      tenant_id,
+      phone_number,
+      message_type, // 'text' | 'template'
+      message_text,
+      template_name,
+      template_parameters,
+      metadata,
+    } = req.body || {};
+
+    if (!tenant_id || !phone_number || !message_type) {
+      return res.status(400).json({ error: 'tenant_id, phone_number, and message_type are required' });
+    }
+
+    const toPhone = normalizeWhatsAppPhone(phone_number);
+    if (!toPhone) {
+      return res.status(400).json({ error: 'Invalid phone_number' });
+    }
+
+    // ── 1. Fetch WhatsApp configuration for the tenant ──
+    const { data: config, error: configError } = await supabaseAdmin
+      .from('whatsapp_configurations')
+      .select('id, phone_number_id, token, default_template_language')
+      .eq('tenant_id', tenant_id)
+      .is('deleted_at', null)
+      .single();
+
+    if (configError || !config?.phone_number_id) {
+      console.error('[agent-message] WhatsApp config not found:', configError?.message);
+      return res.status(400).json({ error: 'WhatsApp not configured or phone_number_id missing' });
+    }
+
+    // Prepare variables for DB persistence
+    let systemUserId = null; // System/Agent ID
+    let resolvedContactId = metadata?.contact_id || null;
+    let resolvedThreadId = null;
+    let savedText = '';
+    let richPayloadForDb = null;
+    let metaPayload = null;
+
+    if (message_type === 'text') {
+      if (!message_text) {
+        return res.status(400).json({ error: 'message_text is required for message_type text' });
+      }
+
+      // Validar ventana de 24h
+      const windowState = await getConversationWindowState({
+        tenantId: tenant_id,
+        phoneNumber: toPhone,
+        explicitThreadId: null, // Will be resolved below
+      });
+      if (!windowState.windowOpen) {
+        return res.status(409).json({
+          error: 'WINDOW_CLOSED',
+          message: 'Ventana de 24h cerrada. El agente debe usar una plantilla aprobada o esperar a que el usuario responda.',
+        });
+      }
+
+      metaPayload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: toPhone,
+        type: 'text',
+        text: { preview_url: false, body: message_text },
+      };
+      savedText = message_text;
+      richPayloadForDb = buildTextRichMessageForDb({ text: message_text, ts: new Date().toISOString() });
+
+    } else if (message_type === 'template') {
+      if (!template_name) {
+        return res.status(400).json({ error: 'template_name is required for message_type template' });
+      }
+
+      const tplParams = Array.isArray(template_parameters) ? template_parameters.map(v => String(v ?? '')) : [];
+
+      // Fetch approved template
+      const { data: approvedTemplate, error: templateError } = await supabaseAdmin
+        .from('whatsapp_templates')
+        .select('id, template_name, language, meta_status, components')
+        .eq('whatsapp_configuration_id', config.id)
+        .eq('template_name', template_name)
+        .eq('meta_status', 'APPROVED')
+        .is('deleted_at', null)
+        .limit(1)
+        .maybeSingle();
+
+      if (templateError || !approvedTemplate) {
+        return res.status(400).json({ error: `Approved template "${template_name}" not found` });
+      }
+
+      const templateLanguage = String(approvedTemplate.language || config.default_template_language || 'es');
+      
+      const components = [];
+      if (tplParams.length > 0) {
+        components.push({
+          type: 'body',
+          parameters: tplParams.map(value => ({ type: 'text', text: String(value) })),
+        });
+      }
+
+      metaPayload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: toPhone,
+        type: 'template',
+        template: {
+          name: approvedTemplate.template_name,
+          language: { code: templateLanguage },
+          ...(components.length > 0 ? { components } : {}),
+        },
+      };
+
+      savedText = `[TPL] ${approvedTemplate.template_name}`;
+      const templatePreviewBody = tplParams.join(' | ') || '';
+      richPayloadForDb = buildTemplateRichMessageForDb({
+        kind: 'template',
+        template_name: approvedTemplate.template_name,
+        language: templateLanguage,
+        template_components: approvedTemplate.components || [],
+        sent_components: components || [],
+        text: templatePreviewBody || savedText,
+        ts: new Date().toISOString(),
+      }, savedText);
+
+    } else {
+      return res.status(400).json({ error: 'Invalid message_type' });
+    }
+
+    console.log('[agent-message] Sending to Meta:', JSON.stringify(metaPayload));
+
+    // ── 2. Send to Meta Graph API ──
+    const metaRes = await fetch(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/${config.phone_number_id}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(metaPayload),
+      }
+    );
+
+    const metaData = await metaRes.json();
+    if (!metaRes.ok) {
+      const mapped = mapMetaError(metaData.error);
+      console.error('[agent-message] Meta API error:', JSON.stringify(metaData));
+      return res.status(metaRes.status).json({
+        error: mapped.message,
+        code: mapped.code,
+        hint: mapped.hint,
+        details: metaData.error,
+      });
+    }
+
+    // ── 3. Persist message in DB ──
+    try {
+      const resolved = await resolveContactAndThread({
+        tenantId: tenant_id,
+        phoneNumber: toPhone,
+        userId: systemUserId,
+        seedLastMessage: savedText,
+      });
+      resolvedThreadId = resolved.threadId;
+      if (!resolvedContactId) resolvedContactId = resolved.contactId;
+    } catch (resolveErr) {
+      console.warn('[agent-message] Could not resolve contact/thread:', resolveErr.message);
+    }
+
+    if (resolvedThreadId) {
+      const { data: saved, error: saveError } = await supabaseAdmin
+        .from('whatsapp_messages')
+        .insert({
+          whatsapp_thread_id: resolvedThreadId,
+          message_text: richPayloadForDb,
+          incoming: false,
+          read: false,
+          sent_at: new Date().toISOString(),
+          created_by: systemUserId,
+          updated_by: systemUserId,
+          // Guardamos un metadato para indicar que fue el agente
+          metadata: { ...metadata, sent_by: 'ai_agent' }
+        })
+        .select()
+        .single();
+
+      if (saveError) {
+        console.warn('[agent-message] Could not persist message:', saveError.message);
+      }
+
+      // Update thread
+      const windowState = await getConversationWindowState({
+        tenantId: tenant_id,
+        phoneNumber: toPhone,
+        explicitThreadId: resolvedThreadId,
+      });
+
+      await supabaseAdmin
+        .from('whatsapp_threads')
+        .update({
+          last_message: savedText,
+          last_interaction: new Date().toISOString(),
+          window_open: windowState.windowOpen,
+          window_expires_at: windowState.windowExpiresAt,
+          last_inbound_at: windowState.lastInboundAt,
+          updated_by: systemUserId,
+        })
+        .eq('id', resolvedThreadId);
+    }
+
+    return res.status(200).json({
+      success: true,
+      whatsapp_message_id: metaData.messages?.[0]?.id || null,
+      sent_to: toPhone,
+      message_type,
+    });
+
+  } catch (err) {
+    console.error('[agent-message] Internal error:', err);
     return res.status(500).json({ error: err.message });
   }
 });
