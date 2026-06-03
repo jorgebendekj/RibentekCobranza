@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
-import { useTenant } from '../context/TenantContext';
+import { supabase } from '../../lib/supabase';
+import { useAuth } from '../context/AuthContext';
 
 export default function AIAgentConfig() {
-  const { currentTenant } = useTenant();
+  const { tenantId } = useAuth();
   const [config, setConfig] = useState({
     system_prompt: 'usa las tools dependiendo del contexto',
     mcp_url: 'https://ribentek-cobranza.vercel.app/mcp/sse',
@@ -15,10 +15,10 @@ export default function AIAgentConfig() {
   const [success, setSuccess] = useState(false);
 
   useEffect(() => {
-    if (currentTenant?.id) {
+    if (tenantId) {
       fetchConfig();
     }
-  }, [currentTenant?.id]);
+  }, [tenantId]);
 
   const fetchConfig = async () => {
     try {
@@ -26,7 +26,7 @@ export default function AIAgentConfig() {
       const { data, error } = await supabase
         .from('ai_agent_configs')
         .select('*')
-        .eq('tenant_id', currentTenant!.id)
+        .eq('tenant_id', tenantId!)
         .maybeSingle();
 
       if (error && error.code !== 'PGRST116') {
@@ -57,7 +57,7 @@ export default function AIAgentConfig() {
       const { error: upsertError } = await supabase
         .from('ai_agent_configs')
         .upsert({
-          tenant_id: currentTenant!.id,
+          tenant_id: tenantId!,
           system_prompt: config.system_prompt,
           mcp_url: config.mcp_url,
           is_active: config.is_active,
